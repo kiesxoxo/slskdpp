@@ -383,6 +383,7 @@ func (m *Manager) Cancel(id int64) error {
 	}
 	m.stopLocked(d)
 	d.State = StateCancelled
+	d.searching = false
 	d.Error = ""
 	m.saveLocked(d)
 	part := m.partPath(d)
@@ -901,26 +902,42 @@ func (m *Manager) switchSourceLocked(d *Download) {
 	d.State = StateQueued
 	d.searching = true
 	m.saveLocked(d)
-	start := time.Now()
-	if start.Before(m.nextAlt) {
-		start = m.nextAlt
-	}
-	m.nextAlt = start.Add(m.t.altGap)
-	go m.findSource(m.ctx, d.ID, d.Filename, d.Size, tried, time.Until(start))
+	go m.findSource(m.ctx, d.ID, d.Filename, d.Size, tried)
 }
 
 // findSource searches the network for the same file name and size from a
-// user not tried yet, and switches the download to them.
-func (m *Manager) findSource(ctx context.Context, id int64, filename string, size uint64, tried []string, delay time.Duration) {
+// user not tried yet, and switches the download to them. Searches are
+// spaced altGap apart; while one waits, a sibling's search may already
+// have moved this file along.
+func (m *Manager) findSource(ctx context.Context, id int64, filename string, size uint64, tried []string) {
+	stillNeeded := func() bool {
+		d := m.downloads[id]
+		return d != nil && d.searching && d.State == StateQueued && d.Filename == filename
+	}
+	for {
+		m.mu.Lock()
+		if !stillNeeded() {
+			m.mu.Unlock()
+			return
+		}
+		now := time.Now()
+		if !now.Before(m.nextAlt) {
+			m.nextAlt = now.Add(m.t.altGap)
+			m.mu.Unlock()
+			break
+		}
+		wait := min(m.nextAlt.Sub(now), time.Second)
+		m.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+	}
+
 	var pick *search.File
 	var pickUser string
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(delay):
-	}
-	parts := remoteParts(filename)
-	name := parts[len(parts)-1]
+	_, name := splitRemote(filename)
 	s, err := m.searcher.StartBackground(altQuery(filename))
 	if err == nil {
 		select {
@@ -943,14 +960,11 @@ func (m *Manager) findSource(ctx context.Context, id int64, filename string, siz
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	d := m.downloads[id]
-	if d == nil {
+	if !stillNeeded() {
 		return
 	}
+	d := m.downloads[id]
 	d.searching = false
-	if d.State != StateQueued {
-		return // cancelled meanwhile
-	}
 	if pick == nil {
 		if err != nil {
 			d.Error += "; searching for another source failed: " + err.Error()
@@ -960,13 +974,21 @@ func (m *Manager) findSource(ctx context.Context, id int64, filename string, siz
 		m.saveLocked(d)
 		return
 	}
+	key := hintKey(d.Username, d.Filename)
 	newFolder, _ := splitRemote(pick.Path)
-	m.hints[hintKey(d.Username, d.Filename)] = sourceHint{pickUser, newFolder}
-	size = d.Size
+	m.hints[key] = sourceHint{pickUser, newFolder}
 	if pick.Size > 0 {
 		size = pick.Size
 	}
 	m.useSourceLocked(d, tried, pickUser, pick.Path, size)
+	// Move the rest of the folder along without more searches.
+	for _, o := range m.downloads {
+		if o.searching && hintKey(o.Username, o.Filename) == key && !slices.Contains(o.Tried, pickUser) {
+			o.searching = false
+			_, oname := splitRemote(o.Filename)
+			m.useSourceLocked(o, append(slices.Clone(o.Tried), o.Username), pickUser, newFolder+`\`+oname, o.Size)
+		}
+	}
 }
 
 // useSourceLocked switches d to another user's copy and starts over.

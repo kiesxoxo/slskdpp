@@ -84,6 +84,7 @@ var fast = timing{
 	placeEvery:    time.Hour,
 	offlineAlt:    time.Hour,
 	altWait:       200 * time.Millisecond,
+	altGap:        300 * time.Millisecond,
 	progressEvery: 10 * time.Millisecond,
 	requestLimit:  8,
 }
@@ -434,17 +435,42 @@ func TestFolderFailoverReusesSource(t *testing.T) {
 	e.waitState(views[0].ID, StateRemoteQueued)
 	e.waitState(views[1].ID, StateRemoteQueued)
 
+	// Both are refused at once: one search runs, and once it finds carol
+	// the sibling, still waiting for its turn to search, follows.
 	e.m.HandlePeer("bob", protocol.UploadDenied{Filename: remote, Reason: "Banned"})
-	<-e.snet.queries
-	e.search.HandleResponse("carol", protocol.FileSearchResponse{Token: e.snet.token.Load(), Files: []protocol.File{{Name: `@@carol\Album\01 - Song.flac`, Size: 5000}}})
-	e.expect("carol", protocol.QueueUpload{Filename: `@@carol\Album\01 - Song.flac`})
-
-	// The sibling goes straight to carol's copy of the folder, no search.
 	e.m.HandlePeer("bob", protocol.UploadDenied{Filename: second, Reason: "Banned"})
-	e.expect("carol", protocol.QueueUpload{Filename: `@@carol\Album\02 - Other.flac`})
+	q := <-e.snet.queries
+	file := `@@carol\Album\01 - Song.flac`
+	if q != "01 song" {
+		file = `@@carol\Album\02 - Other.flac`
+	}
+	e.search.HandleResponse("carol", protocol.FileSearchResponse{Token: e.snet.token.Load(), Files: []protocol.File{{Name: file, Size: 5000}, {Name: file, Size: 7000}}})
+	got = map[string]bool{}
+	for range 2 {
+		select {
+		case m := <-e.net.sent:
+			if m.user != "carol" {
+				t.Fatalf("sent to %s", m.user)
+			}
+			got[m.msg.(protocol.QueueUpload).Filename] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("folder did not move to carol")
+		}
+	}
+	if !got[`@@carol\Album\01 - Song.flac`] || !got[`@@carol\Album\02 - Other.flac`] {
+		t.Errorf("requested from carol: %v", got)
+	}
 	select {
 	case q := <-e.snet.queries:
 		t.Errorf("searched again: %q", q)
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond):
 	}
+
+	// A file that only failed later still reuses the hint.
+	third := `@@bob\Music\Artist\Album\03 - Late.flac`
+	views, _ = e.m.Enqueue("bob", []FileRequest{{Path: third, Size: 3000}}, "")
+	e.expect("bob", protocol.QueueUpload{Filename: third})
+	e.waitState(views[0].ID, StateRemoteQueued)
+	e.m.HandlePeer("bob", protocol.UploadDenied{Filename: third, Reason: "Banned"})
+	e.expect("carol", protocol.QueueUpload{Filename: `@@carol\Album\03 - Late.flac`})
 }
