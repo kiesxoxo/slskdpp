@@ -180,6 +180,17 @@ button.ghost {
 table.files {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
+}
+
+table.files th.num {
+  width: 5.5em;
+}
+
+@media (max-width: 520px) {
+  table.files .opt {
+    display: none;
+  }
 }
 
 table.files th {

@@ -12,9 +12,9 @@ directories:
   # incomplete: data/incomplete
 
 web:
-  listen: ":5030"
+  listen: ":5030"     # web UI and API
   username: slskdpp
-  password: ""
+  password: ""        # empty: a random password is generated and logged at startup
 
 shares: []
 log_level: info

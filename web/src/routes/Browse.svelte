@@ -193,14 +193,14 @@
       <div class="scroll">
         <table class="files">
           <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num">Quality</th><th class="num">Length</th></tr>
+            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th></tr>
           </thead>
           <tbody>
             {#each selected.dir.files as f (f.path)}
               <tr>
                 <td class="ellipsis" title={f.name}>{f.name}</td>
                 <td class="num">{size(f.size)}</td>
-                <td class="num">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
+                <td class="num opt">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
                 <td class="num">{duration(f.duration)}</td>
               </tr>
             {:else}
@@ -280,6 +280,7 @@
     font-variant-numeric: tabular-nums;
   }
   .files-pane {
+    background: var(--surface);
     display: flex;
     flex-direction: column;
     min-height: 0;
@@ -299,12 +300,6 @@
     flex: 1;
     overflow-y: auto;
     padding: 0 8px;
-  }
-  .files {
-    table-layout: fixed;
-  }
-  .files th:first-child {
-    width: 60%;
   }
   @media (max-width: 800px) {
     .page {

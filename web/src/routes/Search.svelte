@@ -172,8 +172,8 @@
       {#each searches as s (s.id)}
         <li class:current={s.id === id}>
           <a href={href(['search', String(s.id)])} class="ellipsis" title={s.query}>{s.query}</a>
-          <span class="muted small">{s.folders}</span>
-          {#if s.active}<span class="dot good pulse" title="Collecting results"></span>{/if}
+          <span class="muted small">{s.id === id ? hits.length : s.folders}</span>
+          {#if s.id === id ? active : s.active}<span class="dot good pulse" title="Collecting results"></span>{/if}
           <button class="ghost x" title="Remove search" aria-label="Remove search {s.query}" onclick={() => remove(s)}>×</button>
         </li>
       {:else}
@@ -273,14 +273,14 @@
       <div class="files">
         <table class="files">
           <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num">Quality</th><th class="num">Length</th></tr>
+            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th></tr>
           </thead>
           <tbody>
             {#each source.files as f (f.path)}
               <tr>
                 <td class="ellipsis" title={f.name}>{f.name}</td>
                 <td class="num">{size(f.size)}</td>
-                <td class="num">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
+                <td class="num opt">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
                 <td class="num">{duration(f.duration)}</td>
               </tr>
             {/each}
@@ -497,12 +497,6 @@
   .files {
     flex: 1;
     overflow-y: auto;
-  }
-  .files table {
-    table-layout: fixed;
-  }
-  .files th:first-child {
-    width: 60%;
   }
   @media (max-width: 1000px) {
     .page,
