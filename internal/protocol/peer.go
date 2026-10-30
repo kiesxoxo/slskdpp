@@ -123,9 +123,17 @@ func readFiles(r *Reader) []File {
 func writeDirs(w *Writer, dirs []Directory) {
 	w.Uint32(uint32(len(dirs)))
 	for _, d := range dirs {
-		w.String(d.Name)
-		writeFiles(w, d.Files)
+		WriteDirectory(w, d)
 	}
+}
+
+// WriteDirectory encodes one directory of a share list, for building a
+// SharedFileListResponse payload piece by piece: a uint32 directory
+// count, the directories, then two uint32 zeros (unknown and the
+// private directory count), all zlib-compressed.
+func WriteDirectory(w *Writer, d Directory) {
+	w.String(d.Name)
+	writeFiles(w, d.Files)
 }
 
 func readDirs(r *Reader) []Directory {

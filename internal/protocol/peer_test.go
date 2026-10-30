@@ -172,3 +172,19 @@ func TestReadFrameLarge(t *testing.T) {
 		t.Errorf("truncated large frame: err = %v", err)
 	}
 }
+
+func TestStreamedShareList(t *testing.T) {
+	dirs := []Directory{{Name: `@@a\b`, Files: []File{flac}}, {Name: `@@a\c`}}
+	var w Writer
+	w.Uint32(uint32(len(dirs)))
+	for _, d := range dirs {
+		WriteDirectory(&w, d)
+	}
+	w.Uint32(0)
+	w.Uint32(0)
+	streamed := Encoded{Code: CodeSharedFileListResponse, Payload: Compress(w.Bytes())}
+	m, err := DecodePeer(EncodePeer(streamed)[4:])
+	if err != nil || !reflect.DeepEqual(m, SharedFileListResponse{Dirs: dirs}) {
+		t.Errorf("streamed list decodes to %+v, %v", m, err)
+	}
+}

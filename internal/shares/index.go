@@ -4,7 +4,9 @@
 package shares
 
 import (
+	"bytes"
 	"cmp"
+	"compress/zlib"
 	"context"
 	"database/sql"
 	"errors"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/kiesxoxo/slskdpp/internal/audio"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 )
 
@@ -430,6 +433,7 @@ type entry struct {
 	name  string
 	size  int64
 	mtime int64
+	info  audio.Info
 }
 
 // scan brings the index for dir (inside r) and everything below it in
@@ -473,9 +477,9 @@ func (x *Index) scan(ctx context.Context, r Root, dir string) (bool, error) {
 			if err != nil || !info.Mode().IsRegular() {
 				continue
 			}
-			files = append(files, entry{name, info.Size(), info.ModTime().UnixNano()})
+			files = append(files, entry{name: name, size: info.Size(), mtime: info.ModTime().UnixNano()})
 		}
-		c, err := x.syncFolder(r.Alias, folder, files)
+		c, err := x.syncFolder(r.Alias, folder, local, files)
 		changed = changed || c
 		return err
 	}
@@ -515,8 +519,9 @@ func (x *Index) addWatch(dir string) {
 	}
 }
 
-// syncFolder makes the index rows for one folder match files.
-func (x *Index) syncFolder(root, folder string, files []entry) (bool, error) {
+// syncFolder makes the index rows for one folder match files, reading
+// the audio details of new and changed ones from local.
+func (x *Index) syncFolder(root, folder, local string, files []entry) (bool, error) {
 	type row struct {
 		id          int64
 		size, mtime int64
@@ -555,20 +560,31 @@ func (x *Index) syncFolder(root, folder string, files []entry) (bool, error) {
 	if len(add)+len(upd)+len(del) == 0 {
 		return false, nil
 	}
+	for _, list := range [][]entry{add, upd} {
+		for i := range list {
+			if audio.Supported(list[i].name) {
+				list[i].info, _ = audio.Probe(filepath.Join(local, list[i].name))
+			}
+		}
+	}
 	tx, err := x.db.Begin()
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
 	for _, f := range add {
-		if _, err := tx.Exec(`INSERT INTO shared_files (root, folder, name, size, mtime) VALUES (?, ?, ?, ?, ?)`,
-			root, folder, f.name, f.size, f.mtime); err != nil {
+		a := f.info
+		if _, err := tx.Exec(`INSERT INTO shared_files (root, folder, name, size, mtime, bitrate, duration, sample_rate, bit_depth, vbr, lossless)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			root, folder, f.name, f.size, f.mtime, a.BitRate, a.Duration, a.SampleRate, a.BitDepth, a.VBR, a.Lossless); err != nil {
 			return false, err
 		}
 	}
 	for _, f := range upd {
-		if _, err := tx.Exec(`UPDATE shared_files SET size = ?, mtime = ? WHERE folder = ? AND name = ?`,
-			f.size, f.mtime, folder, f.name); err != nil {
+		a := f.info
+		if _, err := tx.Exec(`UPDATE shared_files SET size = ?, mtime = ?, bitrate = ?, duration = ?, sample_rate = ?, bit_depth = ?, vbr = ?, lossless = ?
+			WHERE folder = ? AND name = ?`,
+			f.size, f.mtime, a.BitRate, a.Duration, a.SampleRate, a.BitDepth, a.VBR, a.Lossless, folder, f.name); err != nil {
 			return false, err
 		}
 	}
@@ -650,7 +666,7 @@ func (x *Index) Search(query string) []protocol.File {
 	excluded := x.excluded
 	x.mu.Unlock()
 	// Fetch extra rows to make up for ones the excluded phrases drop.
-	rows, err := x.db.Query(`SELECT f.folder, f.name, f.size FROM shared_fts JOIN shared_files f ON f.id = shared_fts.rowid
+	rows, err := x.db.Query(`SELECT `+fileCols+` FROM shared_fts JOIN shared_files f ON f.id = shared_fts.rowid
 		WHERE shared_fts MATCH ? LIMIT ?`, match, x.cfg.MaxResults*2)
 	if err != nil {
 		x.log.Debug("search failed", "query", query, "err", err)
@@ -659,49 +675,96 @@ func (x *Index) Search(query string) []protocol.File {
 	defer rows.Close()
 	var out []protocol.File
 	for rows.Next() && len(out) < x.cfg.MaxResults {
-		var folder, name string
-		var size uint64
-		if err := rows.Scan(&folder, &name, &size); err != nil {
+		folder, f, err := scanFile(rows)
+		if err != nil {
 			return out
 		}
-		full := folder + `\` + name
+		full := folder + `\` + f.Name
 		if len(excluded) > 0 {
 			lower := strings.ToLower(full)
 			if slices.ContainsFunc(excluded, func(p string) bool { return strings.Contains(lower, p) }) {
 				continue
 			}
 		}
-		out = append(out, fileOf(full, name, size))
+		f.Name = full
+		out = append(out, f)
 	}
 	return out
 }
 
-func fileOf(full, name string, size uint64) protocol.File {
-	return protocol.File{Name: full, Size: size, Ext: strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))}
+// fileCols are the shared_files columns scanFile reads, aliased f.
+const fileCols = `f.folder, f.name, f.size, f.bitrate, f.duration, f.sample_rate, f.bit_depth, f.vbr, f.lossless`
+
+// scanFile reads a row of fileCols into a file with a bare name and the
+// attributes other clients expect: duration, sample rate and bit depth
+// for lossless audio; bitrate, duration and VBR for lossy.
+func scanFile(rows *sql.Rows) (folder string, f protocol.File, err error) {
+	var a audio.Info
+	if err = rows.Scan(&folder, &f.Name, &f.Size, &a.BitRate, &a.Duration, &a.SampleRate, &a.BitDepth, &a.VBR, &a.Lossless); err != nil {
+		return
+	}
+	f.Ext = strings.ToLower(strings.TrimPrefix(path.Ext(f.Name), "."))
+	attr := func(code, v uint32) {
+		if v > 0 {
+			f.Attrs = append(f.Attrs, protocol.FileAttribute{Code: code, Value: v})
+		}
+	}
+	if a.Lossless {
+		attr(protocol.AttrDuration, a.Duration)
+		attr(protocol.AttrSampleRate, a.SampleRate)
+		attr(protocol.AttrBitDepth, a.BitDepth)
+	} else if a.BitRate > 0 || a.Duration > 0 {
+		attr(protocol.AttrBitRate, a.BitRate)
+		attr(protocol.AttrDuration, a.Duration)
+		vbr := uint32(0)
+		if a.VBR {
+			vbr = 1
+		}
+		f.Attrs = append(f.Attrs, protocol.FileAttribute{Code: protocol.AttrVBR, Value: vbr})
+	}
+	return
 }
 
-// listDirs reads folders with their files (bare names) for browse and
-// folder responses.
-func (x *Index) listDirs(where string, args ...any) ([]protocol.Directory, error) {
-	rows, err := x.db.Query(`SELECT folder, name, size FROM shared_files `+where+` ORDER BY folder, name`, args...)
+// eachDir calls fn with every folder matching where, in order, with its
+// files (bare names). The Directory is reused between calls.
+func (x *Index) eachDir(fn func(d *protocol.Directory) error, where string, args ...any) error {
+	rows, err := x.db.Query(`SELECT `+fileCols+` FROM shared_files f `+where+` ORDER BY f.folder, f.name`, args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var dirs []protocol.Directory
+	var d protocol.Directory
 	for rows.Next() {
-		var folder, name string
-		var size uint64
-		if err := rows.Scan(&folder, &name, &size); err != nil {
-			return nil, err
+		folder, f, err := scanFile(rows)
+		if err != nil {
+			return err
 		}
-		if len(dirs) == 0 || dirs[len(dirs)-1].Name != folder {
-			dirs = append(dirs, protocol.Directory{Name: folder})
+		if folder != d.Name && d.Name != "" {
+			if err := fn(&d); err != nil {
+				return err
+			}
+			d.Files = d.Files[:0]
 		}
-		d := &dirs[len(dirs)-1]
-		d.Files = append(d.Files, fileOf(name, name, size))
+		d.Name = folder
+		d.Files = append(d.Files, f)
 	}
-	return dirs, rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if d.Name != "" {
+		return fn(&d)
+	}
+	return nil
+}
+
+// listDirs reads folders with their files for folder responses.
+func (x *Index) listDirs(where string, args ...any) ([]protocol.Directory, error) {
+	var dirs []protocol.Directory
+	err := x.eachDir(func(d *protocol.Directory) error {
+		dirs = append(dirs, protocol.Directory{Name: d.Name, Files: slices.Clone(d.Files)})
+		return nil
+	}, where, args...)
+	return dirs, err
 }
 
 // BrowseResponse is our whole share list, compressed once and reused
@@ -714,21 +777,60 @@ func (x *Index) BrowseResponse() (protocol.Encoded, error) {
 	}
 	x.mu.Unlock()
 	x.scanMu.Lock() // keep a scan from changing rows mid-read
-	dirs, err := x.listDirs("")
+	enc, err := x.buildBrowse()
 	x.scanMu.Unlock()
 	if err != nil {
 		return protocol.Encoded{}, err
 	}
-	enc := protocol.EncodePayload(protocol.SharedFileListResponse{Dirs: dirs})
 	x.mu.Lock()
 	x.browse = &enc
 	x.mu.Unlock()
 	return enc, nil
 }
 
+// buildBrowse streams the share list from the index into the compressor
+// one folder at a time, so building it never holds more than the
+// compressed result and one folder.
+func (x *Index) buildBrowse() (protocol.Encoded, error) {
+	var count uint32
+	if err := x.db.QueryRow(`SELECT count(DISTINCT folder) FROM shared_files`).Scan(&count); err != nil {
+		return protocol.Encoded{}, err
+	}
+	var out bytes.Buffer
+	zw := zlib.NewWriter(&out)
+	var w protocol.Writer
+	w.Uint32(count)
+	written := uint32(0)
+	err := x.eachDir(func(d *protocol.Directory) error {
+		protocol.WriteDirectory(&w, *d)
+		written++
+		if w.Len() < 32<<10 {
+			return nil
+		}
+		_, err := zw.Write(w.Bytes())
+		w.Reset()
+		return err
+	}, "")
+	if err != nil {
+		return protocol.Encoded{}, err
+	}
+	if written != count {
+		return protocol.Encoded{}, fmt.Errorf("share list changed while building it (%d of %d folders)", written, count)
+	}
+	w.Uint32(0) // unknown
+	w.Uint32(0) // private folders
+	if _, err := zw.Write(w.Bytes()); err != nil {
+		return protocol.Encoded{}, err
+	}
+	if err := zw.Close(); err != nil {
+		return protocol.Encoded{}, err
+	}
+	return protocol.Encoded{Code: protocol.CodeSharedFileListResponse, Payload: out.Bytes()}, nil
+}
+
 // FolderContents lists a shared folder and its subfolders.
 func (x *Index) FolderContents(folder string) ([]protocol.Directory, error) {
-	return x.listDirs(`WHERE folder = ? OR (folder >= ? AND folder < ?)`, folder, folder+`\`, folder+`]`)
+	return x.listDirs(`WHERE f.folder = ? OR (f.folder >= ? AND f.folder < ?)`, folder, folder+`\`, folder+`]`)
 }
 
 // Resolve maps a shared file's path, as others see it, to the local file.

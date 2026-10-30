@@ -55,6 +55,9 @@ func (w *Writer) Raw(b []byte) { w.buf = append(w.buf, b...) }
 
 func (w *Writer) Bytes() []byte { return w.buf }
 
+// Reset empties w, keeping its buffer for reuse.
+func (w *Writer) Reset() { w.buf = w.buf[:0] }
+
 func (w *Writer) Len() int { return len(w.buf) }
 
 // Reader decodes a message payload. Errors are sticky: after the first

@@ -2,9 +2,12 @@ package shares
 
 import (
 	"context"
+	"encoding/binary"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -256,5 +259,63 @@ func TestParseRoot(t *testing.T) {
 	}
 	if r := ParseRoot("/mnt/a=b"); r.Alias != "" || r.Path != "/mnt/a=b" {
 		t.Errorf("path with = parsed as alias: %+v", r)
+	}
+}
+
+// flacFile is a minimal FLAC: STREAMINFO for 44.1 kHz/16-bit, 30 s.
+func flacFile() []byte {
+	b := append([]byte("fLaC"), 0x80, 0, 0, 34)
+	si := make([]byte, 34)
+	binary.BigEndian.PutUint64(si[10:], uint64(44100)<<44|uint64(1)<<41|uint64(15)<<36|44100*30)
+	return append(append(b, si...), make([]byte, 3_000_000)...)
+}
+
+// mp3File is 10 s of MPEG-1 Layer III frames at 128 kbps.
+func mp3File() []byte {
+	var b []byte
+	for range 383 {
+		f := make([]byte, 417)
+		copy(f, []byte{0xff, 0xfb, 0x90, 0x00})
+		b = append(b, f...)
+	}
+	return b
+}
+
+func TestAudioAttributes(t *testing.T) {
+	e := newEnv(t)
+	album := filepath.Join(e.music, "Artist", "Lossless Album")
+	os.MkdirAll(album, 0o755)
+	os.WriteFile(filepath.Join(album, "01 - Track.flac"), flacFile(), 0o644)
+	os.WriteFile(filepath.Join(album, "02 - Track.mp3"), mp3File(), 0o644)
+	e.waitFiles(6)
+
+	attrs := map[string][]protocol.FileAttribute{}
+	for _, f := range e.x.Search("lossless album") {
+		attrs[path.Base(strings.ReplaceAll(f.Name, `\`, "/"))] = f.Attrs
+	}
+	want := map[string][]protocol.FileAttribute{
+		"01 - Track.flac": {{Code: protocol.AttrDuration, Value: 30}, {Code: protocol.AttrSampleRate, Value: 44100}, {Code: protocol.AttrBitDepth, Value: 16}},
+		"02 - Track.mp3":  {{Code: protocol.AttrBitRate, Value: 128}, {Code: protocol.AttrDuration, Value: 10}, {Code: protocol.AttrVBR, Value: 0}},
+	}
+	if !reflect.DeepEqual(attrs, want) {
+		t.Errorf("search attributes\n got %v\nwant %v", attrs, want)
+	}
+
+	// Browse replies carry them too, and the streamed list decodes.
+	enc, _ := e.x.BrowseResponse()
+	m, err := protocol.DecodePeer(protocol.EncodePeer(enc)[4:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range m.(protocol.SharedFileListResponse).Dirs {
+		for _, f := range d.Files {
+			if f.Name == "01 - Track.flac" {
+				found = reflect.DeepEqual(f.Attrs, want["01 - Track.flac"])
+			}
+		}
+	}
+	if !found {
+		t.Error("browse reply lacks the FLAC's attributes")
 	}
 }
