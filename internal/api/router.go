@@ -16,6 +16,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
 
 // Network is the part of the Soulseek client the API uses.
@@ -39,30 +40,40 @@ type Config struct {
 	Logger *slog.Logger
 }
 
+// Deps are the services the API exposes.
+type Deps struct {
+	Net       Network
+	Searches  *search.Manager
+	Downloads *transfers.Manager
+	Bus       *events.Bus
+}
+
 type API struct {
-	cfg      Config
-	log      *slog.Logger
-	net      Network
-	searches *search.Manager
-	bus      *events.Bus
-	limiter  *loginLimiter
-	now      func() time.Time
+	cfg       Config
+	log       *slog.Logger
+	net       Network
+	searches  *search.Manager
+	downloads *transfers.Manager
+	bus       *events.Bus
+	limiter   *loginLimiter
+	now       func() time.Time
 }
 
 // New returns the HTTP handler for the API and UI.
-func New(cfg Config, net Network, searches *search.Manager, bus *events.Bus) http.Handler {
+func New(cfg Config, d Deps) http.Handler {
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
 	}
 	a := &API{
-		cfg:      cfg,
-		log:      log.With("component", "api"),
-		net:      net,
-		searches: searches,
-		bus:      bus,
-		limiter:  newLoginLimiter(),
-		now:      time.Now,
+		cfg:       cfg,
+		log:       log.With("component", "api"),
+		net:       d.Net,
+		searches:  d.Searches,
+		downloads: d.Downloads,
+		bus:       d.Bus,
+		limiter:   newLoginLimiter(),
+		now:       time.Now,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/session", a.login)
@@ -82,6 +93,14 @@ func New(cfg Config, net Network, searches *search.Manager, bus *events.Bus) htt
 	mux.HandleFunc("GET /api/v1/users/{user}/browse", a.auth(a.browse))
 	mux.HandleFunc("GET /api/v1/users/{user}/folder", a.auth(a.folder))
 	mux.HandleFunc("GET /api/v1/users/{user}/info", a.auth(a.userInfo))
+
+	mux.HandleFunc("GET /api/v1/downloads", a.auth(a.listDownloads))
+	mux.HandleFunc("POST /api/v1/downloads", a.auth(a.enqueueFiles))
+	mux.HandleFunc("POST /api/v1/downloads/folder", a.auth(a.enqueueFolder))
+	mux.HandleFunc("POST /api/v1/downloads/clear", a.auth(a.clearDownloads))
+	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", a.auth(a.cancelDownload))
+	mux.HandleFunc("POST /api/v1/downloads/{id}/retry", a.auth(a.retryDownload))
+	mux.HandleFunc("DELETE /api/v1/downloads/{id}", a.auth(a.removeDownload))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")

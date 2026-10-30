@@ -16,6 +16,7 @@ type Config struct {
 	Soulseek    Soulseek    `yaml:"soulseek"`
 	Directories Directories `yaml:"directories"`
 	Web         Web         `yaml:"web"`
+	Transfers   Transfers   `yaml:"transfers"`
 	Shares      []string    `yaml:"shares"`
 	LogLevel    string      `yaml:"log_level"`
 }
@@ -33,6 +34,16 @@ type Directories struct {
 	Incomplete string `yaml:"incomplete"`
 }
 
+type Transfers struct {
+	// MaxAttempts is how often a source is tried before another is sought.
+	MaxAttempts int `yaml:"max_attempts"`
+	// MaxSources caps how many users a file is tried from.
+	MaxSources int `yaml:"max_sources"`
+	// Speed limits in KiB/s; 0 means unlimited.
+	DownloadSpeedLimit    int64 `yaml:"download_speed_limit"`
+	PerDownloadSpeedLimit int64 `yaml:"per_download_speed_limit"`
+}
+
 type Web struct {
 	Listen   string `yaml:"listen"`
 	Username string `yaml:"username"`
@@ -46,6 +57,7 @@ func Default() Config {
 			ListenPort: 2234,
 		},
 		Directories: Directories{Data: "data"},
+		Transfers:   Transfers{MaxAttempts: 5, MaxSources: 3},
 		Web:         Web{Listen: ":5030", Username: "slskdpp"},
 		LogLevel:    "info",
 	}

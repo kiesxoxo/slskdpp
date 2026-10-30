@@ -96,6 +96,15 @@ func TestPeerRoundTrip(t *testing.T) {
 	}
 }
 
+func TestFilePath(t *testing.T) {
+	if p := FilePath(`@@a\Music`, "x.mp3"); p != `@@a\Music\x.mp3` {
+		t.Errorf("bare name: %s", p)
+	}
+	if p := FilePath(`@@a\Music`, `@@a\Music\x.mp3`); p != `@@a\Music\x.mp3` {
+		t.Errorf("full path: %s", p)
+	}
+}
+
 func TestDecodeSearchResponseWithoutOptionalTail(t *testing.T) {
 	// Older clients stop after the queue length.
 	var inner Writer

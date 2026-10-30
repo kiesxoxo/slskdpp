@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -19,6 +21,8 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/store"
+	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
 
 type fakeNet struct {
@@ -44,14 +48,27 @@ func (n *fakeNet) Browse(ctx context.Context, u string) (protocol.SharedFileList
 	}}}, nil
 }
 
+// FolderContents lists bare file names, like real clients. "@@x\\Gone"
+// cannot be listed.
 func (n *fakeNet) FolderContents(ctx context.Context, u, folder string) (protocol.FolderContentsResponse, error) {
-	return protocol.FolderContentsResponse{Folder: folder, Dirs: []protocol.Directory{{Name: folder}}}, nil
+	if folder == `@@x\Gone` {
+		return protocol.FolderContentsResponse{}, errors.New("peer did not answer")
+	}
+	return protocol.FolderContentsResponse{Folder: folder, Dirs: []protocol.Directory{
+		{Name: folder, Files: []protocol.File{{Name: "01.flac", Size: 10}, {Name: "02.flac", Size: 20}}},
+		{Name: folder + `\Scans`, Files: []protocol.File{{Name: "front.jpg", Size: 5}}},
+		{Name: `@@x\Elsewhere`, Files: []protocol.File{{Name: "nope.mp3", Size: 1}}},
+	}}, nil
 }
+
+func (n *fakeNet) SendPeer(context.Context, string, protocol.PeerMessage) error { return nil }
+func (n *fakeNet) WatchUser(string) error                                       { return nil }
 
 type env struct {
 	srv  *httptest.Server
 	net  *fakeNet
 	mgr  *search.Manager
+	dl   *transfers.Manager
 	bus  *events.Bus
 	http *http.Client // carries the session cookie once logged in
 }
@@ -64,11 +81,21 @@ func newEnv(t *testing.T) *env {
 			e.bus.Publish(events.Event{Type: events.TypeSearchHit, Search: s.ID, Data: events.SearchHit{SearchID: s.ID, Hit: h}})
 		},
 	})
+	dir := t.TempDir()
+	db, err := store.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	e.dl, err = transfers.New(transfers.Config{DownloadDir: dir, IncompleteDir: dir}, db, e.net, e.mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ui := fstest.MapFS{
 		"index.html":    {Data: []byte("<!doctype html><title>app</title>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, e.net, e.mgr, e.bus)
+	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Bus: e.bus})
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(e.srv.Close)
 	jar, _ := cookiejar.New(nil)
@@ -334,10 +361,93 @@ func TestStatic(t *testing.T) {
 		t.Errorf("unknown API path: %d %s", resp.StatusCode, b)
 	}
 
-	h := New(Config{}, e.net, e.mgr, e.bus)
+	h := New(Config{}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Bus: e.bus})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "not built") {
 		t.Errorf("placeholder: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDownloads(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	var views []transfers.View
+
+	// A folder download asks the peer for the full listing (bare names,
+	// subfolders included) instead of trusting the search's files.
+	resp, b := e.do(t, "POST", "/api/v1/downloads/folder", map[string]any{
+		"username": "bob", "folder": `@@x\Album`,
+		"files": []transfers.FileRequest{{Path: `@@x\Album\01.flac`, Size: 10}},
+	})
+	if resp.StatusCode != 201 {
+		t.Fatalf("folder: %d %s", resp.StatusCode, b)
+	}
+	json.Unmarshal(b, &views)
+	var paths []string
+	for _, v := range views {
+		paths = append(paths, v.Filename+" -> "+v.Folder+"/"+v.Name)
+	}
+	want := []string{`@@x\Album\01.flac -> Album/01.flac`, `@@x\Album\02.flac -> Album/02.flac`, `@@x\Album\Scans\front.jpg -> Album/Scans/front.jpg`}
+	if strings.Join(paths, "|") != strings.Join(want, "|") {
+		t.Errorf("folder files\n got %v\nwant %v", paths, want)
+	}
+
+	// When the peer cannot list the folder, the request's files are used.
+	resp, b = e.do(t, "POST", "/api/v1/downloads/folder", map[string]any{
+		"username": "bob", "folder": `@@x\Gone`,
+		"files": []transfers.FileRequest{{Path: `@@x\Gone\a.mp3`, Size: 3}},
+	})
+	if resp.StatusCode != 201 || !strings.Contains(string(b), `a.mp3`) {
+		t.Errorf("fallback: %d %s", resp.StatusCode, b)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v1/downloads/folder", map[string]any{"username": "bob", "folder": `@@x\Gone`}); resp.StatusCode != 502 {
+		t.Errorf("unlistable folder without files: %d", resp.StatusCode)
+	}
+
+	resp, b = e.do(t, "POST", "/api/v1/downloads", map[string]any{"username": "carol", "files": []transfers.FileRequest{{Path: `@@c\Single\x.mp3`, Size: 9}}})
+	if resp.StatusCode != 201 {
+		t.Fatalf("files: %d %s", resp.StatusCode, b)
+	}
+	json.Unmarshal(b, &views)
+	id := views[0].ID
+
+	_, b = e.do(t, "GET", "/api/v1/downloads", nil)
+	json.Unmarshal(b, &views)
+	if len(views) != 5 {
+		t.Errorf("%d downloads listed", len(views))
+	}
+
+	base := fmt.Sprintf("/api/v1/downloads/%d", id)
+	if resp, _ := e.do(t, "POST", base+"/cancel", nil); resp.StatusCode != 204 {
+		t.Errorf("cancel: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "POST", base+"/cancel", nil); resp.StatusCode != 409 {
+		t.Errorf("cancel twice: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "POST", base+"/retry", nil); resp.StatusCode != 204 {
+		t.Errorf("retry: %d", resp.StatusCode)
+	}
+	e.do(t, "POST", base+"/cancel", nil)
+	if resp, b := e.do(t, "POST", "/api/v1/downloads/clear", map[string]any{"states": []string{"cancelled"}}); resp.StatusCode != 200 || !strings.Contains(string(b), `"removed":1`) {
+		t.Errorf("clear: %d %s", resp.StatusCode, b)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v1/downloads/clear", map[string]any{"states": []string{"queued"}}); resp.StatusCode != 400 {
+		t.Errorf("clearing active downloads: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "DELETE", fmt.Sprintf("/api/v1/downloads/%d", views[0].ID), nil); resp.StatusCode != 204 {
+		t.Errorf("remove: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "DELETE", base, nil); resp.StatusCode != 404 {
+		t.Errorf("remove missing: %d", resp.StatusCode)
+	}
+}
+
+func TestBrowseBuildsFullPaths(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	_, b := e.do(t, "GET", "/api/v1/users/bob/folder?path="+url.QueryEscape(`@@x\Album`), nil)
+	if !strings.Contains(string(b), `"path":"@@x\\Album\\01.flac"`) {
+		t.Errorf("folder listing paths: %s", b)
 	}
 }

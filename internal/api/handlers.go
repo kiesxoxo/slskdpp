@@ -175,6 +175,7 @@ func viewDirs(dirs []protocol.Directory) []dirView {
 	for i, d := range dirs {
 		files := make([]search.File, len(d.Files))
 		for j, f := range d.Files {
+			f.Name = protocol.FilePath(d.Name, f.Name)
 			files[j] = search.ConvertFile(f)
 		}
 		out[i] = dirView{Name: d.Name, Files: files}

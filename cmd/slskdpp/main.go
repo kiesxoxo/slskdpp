@@ -21,6 +21,8 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/store"
+	"github.com/kiesxoxo/slskdpp/internal/transfers"
 	"github.com/kiesxoxo/slskdpp/web"
 )
 
@@ -98,10 +100,18 @@ func main() {
 // runDaemon runs the Soulseek session and the web UI until ctx is done.
 func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfig, log *slog.Logger) error {
 	bus := events.NewBus()
+	db, err := store.Open(filepath.Join(cfg.Directories.Data, "slskdpp.db"))
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer db.Close()
+
 	var c *client.Client
 	var searches *search.Manager
+	var downloads *transfers.Manager
 	c = client.New(srvCfg, client.Handlers{
 		Server: func(m any) {
+			downloads.HandleServer(m)
 			switch m := m.(type) {
 			case protocol.AdminMessage:
 				log.Info("admin message", "text", m.Text)
@@ -114,9 +124,18 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 				searches.HandleResponse(user, r)
 				return
 			}
+			if downloads.HandlePeer(user, m) {
+				return
+			}
 			answerPeer(c, user, m)
 		},
+		File: func(user string, token uint32, conn net.Conn) {
+			downloads.HandleFileConn(user, token, conn)
+		},
 		State: func(loggedIn bool) {
+			if loggedIn {
+				downloads.LoggedIn()
+			}
 			bus.Publish(events.Event{
 				Type: events.TypeServerState,
 				Data: events.ServerState{Connected: loggedIn, Username: cfg.Soulseek.Username},
@@ -132,7 +151,27 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 		},
 	})
 
-	stopWeb, err := serveWeb(ctx, cfg, c, searches, bus, log)
+	downloads, err = transfers.New(transfers.Config{
+		DownloadDir:      cfg.Directories.Downloads,
+		IncompleteDir:    cfg.Directories.Incomplete,
+		MaxAttempts:      cfg.Transfers.MaxAttempts,
+		MaxSources:       cfg.Transfers.MaxSources,
+		SpeedLimit:       cfg.Transfers.DownloadSpeedLimit * 1024,
+		PerDownloadLimit: cfg.Transfers.PerDownloadSpeedLimit * 1024,
+		OnUpdate: func(v transfers.View) {
+			bus.Publish(events.Event{Type: events.TypeDownload, Data: v})
+		},
+		OnRemove: func(id int64) {
+			bus.Publish(events.Event{Type: events.TypeDownloadRemoved, Data: events.DownloadRemoved{ID: id}})
+		},
+		Logger: log,
+	}, db, c, searches)
+	if err != nil {
+		return err
+	}
+	go downloads.Run(ctx)
+
+	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Bus: bus}, log)
 	if err != nil {
 		return err
 	}
@@ -141,7 +180,7 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 }
 
 // serveWeb starts the API and UI server and returns a func that stops it.
-func serveWeb(ctx context.Context, cfg config.Config, c *client.Client, searches *search.Manager, bus *events.Bus, log *slog.Logger) (func(), error) {
+func serveWeb(ctx context.Context, cfg config.Config, deps api.Deps, log *slog.Logger) (func(), error) {
 	password := cfg.Web.Password
 	if password == "" {
 		password = api.RandomPassword()
@@ -158,7 +197,7 @@ func serveWeb(ctx context.Context, cfg config.Config, c *client.Client, searches
 		SessionKey: key,
 		UI:         web.Dist(),
 		Logger:     log,
-	}, c, searches, bus)
+	}, deps)
 
 	ln, err := net.Listen("tcp", cfg.Web.Listen)
 	if err != nil {

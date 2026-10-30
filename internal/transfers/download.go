@@ -146,6 +146,8 @@ type Config struct {
 	// half second per download. It runs with the manager locked, so it
 	// must not block or call back into the Manager.
 	OnUpdate func(View)
+	// OnRemove is told when a download is removed. Same rules as OnUpdate.
+	OnRemove func(id int64)
 	Logger   *slog.Logger
 }
 
@@ -208,6 +210,9 @@ func New(cfg Config, db *sql.DB, net Network, searcher Searcher) (*Manager, erro
 	}
 	if cfg.OnUpdate == nil {
 		cfg.OnUpdate = func(View) {}
+	}
+	if cfg.OnRemove == nil {
+		cfg.OnRemove = func(int64) {}
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -407,6 +412,7 @@ func (m *Manager) Remove(id int64) error {
 	}
 	delete(m.downloads, id)
 	err := deleteDownload(m.db, id)
+	m.cfg.OnRemove(id)
 	part := m.partPath(d)
 	m.mu.Unlock()
 	if !done {

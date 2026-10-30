@@ -1,6 +1,9 @@
 package protocol
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Peer message codes, used on connections of type ConnPeer.
 const (
@@ -60,6 +63,16 @@ func (f File) Attr(code uint32) (uint32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// FilePath returns the full remote path of a file listed in dir. Browse
+// and folder responses list bare file names; search responses list full
+// paths.
+func FilePath(dir, name string) string {
+	if strings.ContainsAny(name, `\/`) || dir == "" {
+		return name
+	}
+	return dir + `\` + name
 }
 
 type Directory struct {

@@ -13,6 +13,10 @@ const (
 	TypeServerState = "server.state"
 	TypeSearchHit   = "search.hit"
 	TypeSearchDone  = "search.done"
+	// Data is a transfers.View.
+	TypeDownload = "download"
+	// Data is DownloadRemoved.
+	TypeDownloadRemoved = "download.removed"
 )
 
 // Event is one update. Data is marshalled to JSON for subscribers.
@@ -38,6 +42,10 @@ type SearchHit struct {
 type SearchDone struct {
 	SearchID uint32       `json:"search_id"`
 	Stats    search.Stats `json:"stats"`
+}
+
+type DownloadRemoved struct {
+	ID int64 `json:"id"`
 }
 
 // Bus delivers events to subscribers without ever blocking a publisher.

@@ -16,5 +16,11 @@ web:
   username: slskdpp
   password: ""        # empty: a random password is generated and logged at startup
 
+transfers:
+  max_attempts: 5               # tries per source before looking for another
+  max_sources: 3                # users a file is tried from before giving up
+  download_speed_limit: 0       # KiB/s, 0 = unlimited
+  per_download_speed_limit: 0   # KiB/s per file
+
 shares: []
 log_level: info
