@@ -16,6 +16,7 @@ web:
   username: slskdpp
   password: ""        # empty: a random password is generated and logged at startup
   api_keys: []        # for scripts (X-API-Key header); also SLSKDPP_API_KEY; more can be made in Settings
+  trusted_proxies: [] # reverse proxies whose X-Forwarded-For is believed (IPs or CIDRs); loopback when empty
 
 transfers:
   max_attempts: 5               # tries per source before looking for another

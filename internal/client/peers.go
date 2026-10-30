@@ -56,6 +56,13 @@ type Peers struct {
 	// fileHandler takes over file connections once their transfer token
 	// is read. It runs on the connection's own goroutine.
 	fileHandler func(username string, token uint32, conn net.Conn)
+	// wants reports whether a request is waiting for a response with
+	// this code from username. Unsolicited browse, folder and user info
+	// responses are dropped unread. Nil accepts everything.
+	wants func(username string, code uint32) bool
+
+	inbound    *inboundLimiter
+	bigDecodes chan struct{}
 
 	mu      sync.Mutex
 	conns   map[string]*PeerConn // newest message connection per user
@@ -84,6 +91,8 @@ func newPeers(username string, listenPort uint32, log *slog.Logger, server serve
 		newToken:    newToken,
 		handler:     handler,
 		fileHandler: fileHandler,
+		inbound:     newInboundLimiter(),
+		bigDecodes:  make(chan struct{}, maxBigDecodes),
 		conns:       make(map[string]*PeerConn),
 		dials:       make(map[string]*dialCall),
 		addrs:       make(map[string][]chan protocol.PeerAddress),
@@ -110,7 +119,13 @@ func (p *Peers) Listen(ctx context.Context) error {
 				}
 				return
 			}
-			go p.accept(conn)
+			lc, ok := p.inbound.admit(conn)
+			if !ok {
+				p.log.Debug("too many peer connections; refusing one", "remote", conn.RemoteAddr())
+				conn.Close()
+				continue
+			}
+			go p.accept(lc)
 		}
 	}()
 	return nil
@@ -415,24 +430,69 @@ func (p *Peers) serve(pc *PeerConn) {
 	}()
 	r := idleReader{pc.conn}
 	for {
-		body, err := protocol.ReadFrame(r, maxPeerFrame)
-		if err != nil {
+		if err := p.readOne(r, pc.Username); err != nil {
 			if !pc.Closed() {
 				p.log.Debug("peer connection closed", "user", pc.Username, "err", err)
 			}
 			return
 		}
-		m, err := protocol.DecodePeer(body)
-		if err != nil {
-			p.log.Debug("bad peer message", "user", pc.Username, "err", err)
-			continue
-		}
-		if u, ok := m.(protocol.UnknownMessage); ok {
-			p.log.Debug("unhandled peer message", "user", pc.Username, "code", u.Code, "len", len(u.Payload))
-			continue
-		}
-		p.handler(pc.Username, m)
 	}
+}
+
+// readOne reads, decodes and handles one message. Responses nobody asked
+// for are skipped without being read into memory, and large or
+// compressed messages wait their turn so that many peers at once cannot
+// make us hold more than a few of them.
+func (p *Peers) readOne(r io.Reader, username string) error {
+	n, err := protocol.ReadFrameLen(r, maxPeerFrame)
+	if err != nil {
+		return err
+	}
+	if n < 4 {
+		_, err := io.CopyN(io.Discard, r, int64(n))
+		return err
+	}
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return err
+	}
+	code := binary.LittleEndian.Uint32(hdr[:])
+	if max := maxFrameFor(code); n > max {
+		return fmt.Errorf("peer message %d of %d bytes exceeds limit %d", code, n, max)
+	}
+	switch code {
+	case protocol.CodeSharedFileListResponse, protocol.CodeFolderContentsResponse, protocol.CodeUserInfoResponse:
+		if p.wants != nil && !p.wants(username, code) {
+			p.log.Debug("dropping unrequested peer response", "user", username, "code", code, "len", n)
+			_, err := io.CopyN(io.Discard, r, int64(n-4))
+			return err
+		}
+	}
+	if n > eagerBody || (n >= gateFrame && protocol.InflateLimit(code) > 0) {
+		t := time.NewTimer(bigDecodeWait)
+		select {
+		case p.bigDecodes <- struct{}{}:
+			t.Stop()
+			defer func() { <-p.bigDecodes }()
+		case <-t.C:
+			return fmt.Errorf("gave up waiting to read a %d byte message", n)
+		}
+	}
+	payload, err := protocol.ReadBody(r, n-4)
+	if err != nil {
+		return err
+	}
+	m, err := protocol.DecodePeerPayload(code, payload)
+	if err != nil {
+		p.log.Debug("bad peer message", "user", username, "err", err)
+		return nil
+	}
+	if u, ok := m.(protocol.UnknownMessage); ok {
+		p.log.Debug("unhandled peer message", "user", username, "code", u.Code, "len", len(u.Payload))
+		return nil
+	}
+	p.handler(username, m)
+	return nil
 }
 
 // PeerConn is a message connection (type ConnPeer) to one user.

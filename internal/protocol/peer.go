@@ -23,9 +23,28 @@ const (
 	CodePlaceInQueueRequest    uint32 = 51
 )
 
-// MaxInflated caps the decompressed size of a browse, search or folder
-// response.
-const MaxInflated = 256 << 20
+// Caps on the decompressed size of peer responses. A browse response holds
+// a whole share; search and folder responses are far smaller, so a peer
+// gets less room to make us inflate and decode.
+const (
+	MaxInflated       = 256 << 20 // browse
+	MaxInflatedFolder = 64 << 20
+	MaxInflatedSearch = 16 << 20
+)
+
+// InflateLimit is the decompressed size cap for a compressed peer message
+// code, or 0 for codes that are not sent compressed.
+func InflateLimit(code uint32) int64 {
+	switch code {
+	case CodeSharedFileListResponse:
+		return MaxInflated
+	case CodeFolderContentsResponse:
+		return MaxInflatedFolder
+	case CodeFileSearchResponse:
+		return MaxInflatedSearch
+	}
+	return 0
+}
 
 // File attribute codes.
 const (
@@ -372,9 +391,14 @@ func DecodePeer(body []byte) (any, error) {
 	if r.Err() != nil {
 		return nil, r.Err()
 	}
-	switch code {
-	case CodeSharedFileListResponse, CodeFileSearchResponse, CodeFolderContentsResponse:
-		raw, err := Decompress(r.Rest(), MaxInflated)
+	return DecodePeerPayload(code, r.Rest())
+}
+
+// DecodePeerPayload decodes a peer message whose code was read already.
+func DecodePeerPayload(code uint32, payload []byte) (any, error) {
+	r := NewReader(payload)
+	if max := InflateLimit(code); max > 0 {
+		raw, err := Decompress(payload, max)
 		if err != nil {
 			return nil, fmt.Errorf("decode peer message %d: %w", code, err)
 		}

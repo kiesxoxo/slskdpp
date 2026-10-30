@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -41,6 +42,9 @@ type Config struct {
 	SessionKey []byte
 	// APIKeys are accepted besides the keys created in the UI.
 	APIKeys []string
+	// TrustedProxies may set X-Forwarded-For; see clientIP. Empty means
+	// loopback only.
+	TrustedProxies []netip.Prefix
 	// DownloadDir and IncompleteDir are reported to slskd clients.
 	DownloadDir   string
 	IncompleteDir string

@@ -181,15 +181,20 @@ func (a *App) build() error {
 	if err != nil {
 		return fmt.Errorf("session key: %w", err)
 	}
+	proxies, err := api.ParseProxies(cfg.Web.TrustedProxies)
+	if err != nil {
+		return err
+	}
 	a.handler, err = api.New(api.Config{
-		Username:      cfg.Web.Username,
-		Password:      password,
-		SessionKey:    key,
-		APIKeys:       cfg.Web.APIKeys,
-		DownloadDir:   cfg.Directories.Downloads,
-		IncompleteDir: cfg.Directories.Incomplete,
-		UI:            web.Dist(),
-		Logger:        log,
+		Username:       cfg.Web.Username,
+		Password:       password,
+		SessionKey:     key,
+		APIKeys:        cfg.Web.APIKeys,
+		TrustedProxies: proxies,
+		DownloadDir:    cfg.Directories.Downloads,
+		IncompleteDir:  cfg.Directories.Incomplete,
+		UI:             web.Dist(),
+		Logger:         log,
 	}, api.Deps{
 		Net: c, Searches: a.searches, Downloads: a.downloads, Uploads: a.uploads, Shares: a.shares,
 		Hooks: a.hooks, Wishlist: a.wishlist, Bus: a.bus, DB: a.db,

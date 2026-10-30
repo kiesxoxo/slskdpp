@@ -140,6 +140,7 @@ variable:
 | `SLSKDPP_WEB_LISTEN` | web UI address (default `:5030`) |
 | `SLSKDPP_WEB_USERNAME`, `SLSKDPP_WEB_PASSWORD` | web login (default user `slskdpp`) |
 | `SLSKDPP_API_KEY` | an API key for scripts |
+| `SLSKDPP_WEB_TRUSTED_PROXIES` | reverse proxies, comma-separated; see [Networking](#networking) |
 | `SLSKDPP_LOG_LEVEL` | `debug`, `info`, `warn` or `error` |
 
 If `web.password` is empty, slskdpp makes up a password at startup and prints
@@ -288,6 +289,22 @@ For browser access from outside your network, put the web UI behind a reverse
 proxy with HTTPS. Session cookies switch to `Secure` when the proxy sends
 `X-Forwarded-Proto: https`. Server-sent events need buffering off; slskdpp
 sends `X-Accel-Buffering: no` for nginx.
+
+After 5 failed logins from one address, logins from it are refused for a while.
+Behind a proxy every request seems to come from the proxy, so tell slskdpp
+which proxies to believe about the real client address. A proxy on the same
+machine is trusted already. For one elsewhere, such as in another Docker
+container, list it:
+
+```yaml
+web:
+  trusted_proxies: ["172.16.0.0/12"]   # IPs or CIDR ranges
+```
+
+Other users' clients are untrusted too. slskdpp limits incoming peer
+connections (1024 in total, 32 per address), drops browse, folder and user info
+responses it did not ask for without reading them, and caps how large any
+message may be, by type. It decodes only a few large messages at a time.
 
 ## Building from source
 

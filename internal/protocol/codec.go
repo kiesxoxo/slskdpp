@@ -142,14 +142,29 @@ func (r *Reader) Rest() []byte { return r.take(r.Remaining()) }
 // ReadFrame reads one length-prefixed frame and returns its body (the bytes
 // after the length). Frames larger than max are rejected.
 func ReadFrame(rd io.Reader, max uint32) ([]byte, error) {
+	n, err := ReadFrameLen(rd, max)
+	if err != nil {
+		return nil, err
+	}
+	return ReadBody(rd, n)
+}
+
+// ReadFrameLen reads a frame's length prefix, rejecting lengths over max.
+// The body follows; read it with ReadBody.
+func ReadFrameLen(rd io.Reader, max uint32) (uint32, error) {
 	var hdr [4]byte
 	if _, err := io.ReadFull(rd, hdr[:]); err != nil {
-		return nil, err
+		return 0, err
 	}
 	n := binary.LittleEndian.Uint32(hdr[:])
 	if n > max {
-		return nil, fmt.Errorf("protocol: frame of %d bytes exceeds limit %d", n, max)
+		return 0, fmt.Errorf("protocol: frame of %d bytes exceeds limit %d", n, max)
 	}
+	return n, nil
+}
+
+// ReadBody reads n bytes of frame body.
+func ReadBody(rd io.Reader, n uint32) ([]byte, error) {
 	if n <= eagerFrame {
 		body := make([]byte, n)
 		if _, err := io.ReadFull(rd, body); err != nil {

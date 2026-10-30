@@ -29,6 +29,28 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test -race ./...
+      - name: Fuzz the protocol decoders briefly
+        run: |
+          for f in $(go test -list '^Fuzz' ./internal/protocol | grep '^Fuzz'); do
+            go test ./internal/protocol -run '^$' -fuzz "^$f\$" -fuzztime 20s
+          done
+
+  vulns:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm audit
+        working-directory: web
+        run: npm audit --audit-level=high
 
   web:
     name: Web UI

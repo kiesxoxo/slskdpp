@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -74,6 +75,10 @@ type Web struct {
 	// APIKeys are accepted in X-API-Key or Authorization: Bearer headers,
 	// besides keys created in the web UI.
 	APIKeys []string `yaml:"api_keys"`
+	// TrustedProxies are reverse proxies (IPs or CIDR ranges) whose
+	// X-Forwarded-For header names the real client. Loopback is trusted
+	// when this is empty.
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 func Default() Config {
@@ -137,6 +142,9 @@ func applyEnv(cfg *Config) error {
 	}
 	if v, ok := os.LookupEnv("SLSKDPP_API_KEY"); ok && v != "" {
 		cfg.Web.APIKeys = append(cfg.Web.APIKeys, v)
+	}
+	if v, ok := os.LookupEnv("SLSKDPP_WEB_TRUSTED_PROXIES"); ok {
+		cfg.Web.TrustedProxies = strings.Split(v, ",")
 	}
 	if v, ok := os.LookupEnv("SLSKDPP_LISTEN_PORT"); ok {
 		port, err := strconv.ParseUint(v, 10, 16)

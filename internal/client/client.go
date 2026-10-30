@@ -81,6 +81,7 @@ func New(cfg ServerConfig, h Handlers) *Client {
 	c.username = cfg.Username
 	c.distrib = newDistrib(c, cfg.Logger)
 	c.peers = newPeers(cfg.Username, cfg.ListenPort, cfg.Logger, c.srv, c.NewToken, c.onPeer, h.File)
+	c.peers.wants = c.awaiting
 	return c
 }
 
@@ -228,6 +229,19 @@ func (c *Client) onServer(m any) {
 	c.peers.handleServer(m)
 	c.distrib.handleServer(m)
 	c.h.Server(m)
+}
+
+// awaiting reports whether a request to username waits for a response
+// with code.
+func (c *Client) awaiting(username string, code uint32) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.waiters {
+		if k.user == username && k.code == code {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) onPeer(username string, m any) {

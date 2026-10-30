@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -124,7 +123,7 @@ type credentials struct {
 }
 
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := a.clientIP(r)
 	if wait := a.limiter.blocked(ip, a.now()); wait > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, "too many failed logins, try again later")
@@ -175,14 +174,6 @@ func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 
 func isHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
-}
-
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // loginLimiter blocks an IP after maxLoginFailures failed logins within
