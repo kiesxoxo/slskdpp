@@ -26,6 +26,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/store"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
+	"github.com/kiesxoxo/slskdpp/internal/wishlist"
 	"github.com/kiesxoxo/slskdpp/web"
 )
 
@@ -115,12 +116,15 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	var uploads *transfers.Uploads
 	var index *shares.Index
 	var respond *responder
+	var wish *wishlist.Manager
 	c = client.New(srvCfg, client.Handlers{
 		Server: func(m any) {
 			downloads.HandleServer(m)
 			switch m := m.(type) {
 			case protocol.ExcludedSearchPhrases:
 				index.SetExcluded(m.Phrases)
+			case protocol.WishlistInterval:
+				wish.SetServerInterval(time.Duration(m.Seconds) * time.Second)
 			case protocol.AdminMessage:
 				log.Info("admin message", "text", m.Text)
 			default:
@@ -194,6 +198,15 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	}
 	go downloads.Run(ctx)
 
+	wish = wishlist.New(wishlist.Config{
+		Interval: time.Duration(cfg.Wishlist.Interval) * time.Minute,
+		OnUpdate: func(e wishlist.Entry) {
+			bus.Publish(events.Event{Type: events.TypeWishlist, Data: e})
+		},
+		Logger: log,
+	}, db, searches, c, downloads)
+	go wish.Run(ctx, c.Server().WaitLoggedIn)
+
 	roots := make([]shares.Root, 0, len(cfg.Shares))
 	for _, s := range cfg.Shares {
 		roots = append(roots, shares.ParseRoot(s))
@@ -230,7 +243,7 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	go uploads.Run(ctx)
 	respond = newResponder(c, index, uploads)
 
-	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Hooks: runner, Bus: bus, DB: db}, log)
+	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Hooks: runner, Wishlist: wish, Bus: bus, DB: db}, log)
 	if err != nil {
 		return err
 	}

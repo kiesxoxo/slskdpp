@@ -5,10 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
 
@@ -53,7 +51,7 @@ func (a *API) enqueueFolder(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), folderTimeout)
 	defer cancel()
 	resp, err := a.net.FolderContents(ctx, req.Username, req.Folder)
-	if files := folderFiles(req.Folder, resp.Dirs); err == nil && len(files) > 0 {
+	if files := transfers.FilesInFolder(req.Folder, resp.Dirs); err == nil && len(files) > 0 {
 		req.Files = files
 	} else if len(req.Files) == 0 {
 		if err == nil {
@@ -65,20 +63,6 @@ func (a *API) enqueueFolder(w http.ResponseWriter, r *http.Request) {
 		a.log.Info("using search results for folder download", "user", req.Username, "folder", req.Folder, "err", err)
 	}
 	a.enqueue(w, r, req)
-}
-
-// folderFiles lists the files in folder and below it.
-func folderFiles(folder string, dirs []protocol.Directory) []transfers.FileRequest {
-	var out []transfers.FileRequest
-	for _, d := range dirs {
-		if d.Name != folder && !strings.HasPrefix(d.Name, folder+`\`) {
-			continue
-		}
-		for _, f := range d.Files {
-			out = append(out, transfers.FileRequest{Path: protocol.FilePath(d.Name, f.Name), Size: f.Size})
-		}
-	}
-	return out
 }
 
 func (a *API) enqueue(w http.ResponseWriter, r *http.Request, req enqueueRequest) {

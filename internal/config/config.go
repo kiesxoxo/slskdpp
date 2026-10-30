@@ -18,6 +18,7 @@ type Config struct {
 	Web         Web         `yaml:"web"`
 	Transfers   Transfers   `yaml:"transfers"`
 	Hooks       Hooks       `yaml:"hooks"`
+	Wishlist    Wishlist    `yaml:"wishlist"`
 	Shares      []string    `yaml:"shares"`
 	LogLevel    string      `yaml:"log_level"`
 }
@@ -48,6 +49,12 @@ type Transfers struct {
 	UploadSlots int `yaml:"upload_slots"`
 	// MaxQueuedPerUser caps how many files one user may queue from us.
 	MaxQueuedPerUser int `yaml:"max_queued_per_user"`
+}
+
+type Wishlist struct {
+	// Interval is the minutes between wishlist searches; the server's
+	// interval is the minimum. 0 uses the server's.
+	Interval int `yaml:"interval"`
 }
 
 // Hooks tell other programs about finished downloads.

@@ -27,6 +27,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/store"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
+	"github.com/kiesxoxo/slskdpp/internal/wishlist"
 )
 
 type fakeNet struct {
@@ -118,7 +119,8 @@ func newEnv(t *testing.T) *env {
 	}
 	h, err := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui,
 		APIKeys: []string{"config-key-123"}}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx,
-		Hooks: hooks.New(hooks.Config{OnDownload: "echo ok $SLSKDPP_EVENT"}), Bus: e.bus, DB: db})
+		Hooks: hooks.New(hooks.Config{OnDownload: "echo ok $SLSKDPP_EVENT"}), Bus: e.bus, DB: db,
+		Wishlist: wishlist.New(wishlist.Config{Interval: time.Hour}, db, e.mgr, e.net, e.dl)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,5 +610,36 @@ func TestAPIKeys(t *testing.T) {
 	}
 	if resp, _ := e.do(t, "DELETE", "/api/v1/apikeys/-1", nil); resp.StatusCode != 404 {
 		t.Errorf("revoking a config key: %d", resp.StatusCode)
+	}
+}
+
+func TestWishlistEndpoints(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	resp, b := e.do(t, "POST", "/api/v1/wishlist", map[string]any{
+		"query": "aphex twin drukqs", "auto_download": true, "filter": map[string]any{"formats": []string{"flac"}, "min_files": 10},
+	})
+	if resp.StatusCode != 201 || !strings.Contains(string(b), `"formats":["flac"]`) || !strings.Contains(string(b), `"enabled":true`) {
+		t.Fatalf("add: %d %s", resp.StatusCode, b)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v1/wishlist", map[string]any{"query": "  "}); resp.StatusCode != 400 {
+		t.Errorf("empty query: %d", resp.StatusCode)
+	}
+	resp, b = e.do(t, "PATCH", "/api/v1/wishlist/1", map[string]any{"enabled": false})
+	if resp.StatusCode != 200 || !strings.Contains(string(b), `"enabled":false`) || !strings.Contains(string(b), `"auto_download":true`) {
+		t.Errorf("update: %d %s", resp.StatusCode, b)
+	}
+	_, b = e.do(t, "GET", "/api/v1/wishlist", nil)
+	if !strings.Contains(string(b), `"interval_seconds":3600`) || !strings.Contains(string(b), `"query":"aphex twin drukqs"`) {
+		t.Errorf("list: %s", b)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v1/wishlist/1/search", nil); resp.StatusCode != 202 {
+		t.Errorf("search now: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "DELETE", "/api/v1/wishlist/1", nil); resp.StatusCode != 204 {
+		t.Errorf("delete: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "PATCH", "/api/v1/wishlist/1", map[string]any{}); resp.StatusCode != 404 {
+		t.Errorf("update missing: %d", resp.StatusCode)
 	}
 }

@@ -79,13 +79,23 @@ func NewManager(net Network, opts Options) *Manager {
 }
 
 // Start sends a search to the network.
-func (m *Manager) Start(query string) (*Search, error) { return m.start(query, false) }
+func (m *Manager) Start(query string) (*Search, error) { return m.start(query, false, false) }
 
 // StartBackground sends a search that List leaves out, for searches the
 // user did not ask for, such as looking for another source of a file.
-func (m *Manager) StartBackground(query string) (*Search, error) { return m.start(query, true) }
+func (m *Manager) StartBackground(query string) (*Search, error) { return m.start(query, true, false) }
 
-func (m *Manager) start(query string, background bool) (*Search, error) {
+// WishlistNetwork is implemented by networks that can send wishlist
+// searches, which the server rate-limits separately.
+type WishlistNetwork interface {
+	WishlistSearch(token uint32, query string) error
+}
+
+// StartWishlist sends a background search as a wishlist search when the
+// network supports it.
+func (m *Manager) StartWishlist(query string) (*Search, error) { return m.start(query, true, true) }
+
+func (m *Manager) start(query string, background, wishlist bool) (*Search, error) {
 	query = strings.Join(strings.Fields(query), " ")
 	if query == "" {
 		return nil, errors.New("search: empty query")
@@ -118,7 +128,11 @@ func (m *Manager) start(query string, background bool) (*Search, error) {
 	for _, old := range evicted {
 		old.Stop()
 	}
-	if err := m.net.Search(s.ID, query); err != nil {
+	send := m.net.Search
+	if wn, ok := m.net.(WishlistNetwork); ok && wishlist {
+		send = wn.WishlistSearch
+	}
+	if err := send(s.ID, query); err != nil {
 		m.Remove(s.ID)
 		return nil, err
 	}

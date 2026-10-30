@@ -148,6 +148,12 @@ func (c *Client) ConnectFile(ctx context.Context, username string, token uint32)
 	return c.peers.ConnectFile(ctx, username, token)
 }
 
+// WishlistSearch sends a search on the wishlist schedule. Responses
+// arrive like those to Search.
+func (c *Client) WishlistSearch(token uint32, query string) error {
+	return c.srv.Send(protocol.WishlistSearch{Token: token, Query: query})
+}
+
 // SendPeer delivers a message to username, connecting if needed.
 func (c *Client) SendPeer(ctx context.Context, username string, m protocol.PeerMessage) error {
 	return c.peers.Send(ctx, username, m)

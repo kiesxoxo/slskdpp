@@ -21,6 +21,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/search"
 	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
+	"github.com/kiesxoxo/slskdpp/internal/wishlist"
 )
 
 // Network is the part of the Soulseek client the API uses.
@@ -54,6 +55,7 @@ type Deps struct {
 	Uploads   *transfers.Uploads
 	Shares    *shares.Index
 	Hooks     *hooks.Runner
+	Wishlist  *wishlist.Manager
 	Bus       *events.Bus
 	// DB stores API keys; without it only Config.APIKeys work.
 	DB *sql.DB
@@ -68,6 +70,7 @@ type API struct {
 	uploads   *transfers.Uploads
 	shares    *shares.Index
 	hooks     *hooks.Runner
+	wishlist  *wishlist.Manager
 	bus       *events.Bus
 	keys      *keyring
 	limiter   *loginLimiter
@@ -89,6 +92,7 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 		uploads:   d.Uploads,
 		shares:    d.Shares,
 		hooks:     d.Hooks,
+		wishlist:  d.Wishlist,
 		bus:       d.Bus,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
@@ -138,6 +142,12 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/apikeys", a.auth(a.sessionOnly(a.listKeys)))
 	mux.HandleFunc("POST /api/v1/apikeys", a.auth(a.sessionOnly(a.createKey)))
 	mux.HandleFunc("DELETE /api/v1/apikeys/{id}", a.auth(a.sessionOnly(a.revokeKey)))
+
+	mux.HandleFunc("GET /api/v1/wishlist", a.auth(a.listWishlist))
+	mux.HandleFunc("POST /api/v1/wishlist", a.auth(a.addWishlist))
+	mux.HandleFunc("PATCH /api/v1/wishlist/{id}", a.auth(a.updateWishlist))
+	mux.HandleFunc("DELETE /api/v1/wishlist/{id}", a.auth(a.removeWishlist))
+	mux.HandleFunc("POST /api/v1/wishlist/{id}/search", a.auth(a.searchWishlist))
 
 	mux.HandleFunc("GET /api/v1/hooks", a.auth(a.listHooks))
 	mux.HandleFunc("POST /api/v1/hooks/test", a.auth(a.testHooks))

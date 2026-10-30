@@ -26,6 +26,9 @@ transfers:
   max_queued_per_user: 500      # files one user may queue from us
   upload_speed_limit: 0         # KiB/s, 0 = unlimited
 
+wishlist:
+  interval: 0       # minutes between wishlist searches; 0 = as often as the server allows
+
 # Run something when downloads finish. Commands run with sh -c and get
 # SLSKDPP_EVENT, SLSKDPP_PATH, SLSKDPP_FOLDER, SLSKDPP_USERNAME,
 # SLSKDPP_REMOTE_PATH, SLSKDPP_SIZE, SLSKDPP_FILES and SLSKDPP_FAILED.

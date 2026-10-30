@@ -1120,3 +1120,18 @@ func (m *Manager) hasActiveLocked(username string) bool {
 func (m *Manager) partPath(d *Download) string {
 	return filepath.Join(m.cfg.IncompleteDir, fmt.Sprintf("%d-%s.part", d.ID, cleanName(path.Base(d.Dest))))
 }
+
+// FilesInFolder lists the files in folder and below it from a folder or
+// browse listing, with full remote paths.
+func FilesInFolder(folder string, dirs []protocol.Directory) []FileRequest {
+	var out []FileRequest
+	for _, d := range dirs {
+		if d.Name != folder && !strings.HasPrefix(d.Name, folder+`\`) {
+			continue
+		}
+		for _, f := range d.Files {
+			out = append(out, FileRequest{Path: protocol.FilePath(d.Name, f.Name), Size: f.Size})
+		}
+	}
+	return out
+}

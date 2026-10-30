@@ -29,6 +29,7 @@ const (
 	CodeEmbeddedMessage       uint32 = 93
 	CodeAcceptChildren        uint32 = 100
 	CodePossibleParents       uint32 = 102
+	CodeWishlistSearch        uint32 = 103
 	CodeWishlistInterval      uint32 = 104
 	CodeSendUploadSpeed       uint32 = 121
 	CodeBranchLevel           uint32 = 126
@@ -145,6 +146,19 @@ type FileSearch struct {
 
 func (FileSearch) serverCode() uint32 { return CodeFileSearch }
 func (m FileSearch) encode(w *Writer) {
+	w.Uint32(m.Token)
+	w.String(m.Query)
+}
+
+// WishlistSearch is a search sent on the wishlist schedule; the server
+// limits how often (see WishlistInterval) but treats it like FileSearch.
+type WishlistSearch struct {
+	Token uint32
+	Query string
+}
+
+func (WishlistSearch) serverCode() uint32 { return CodeWishlistSearch }
+func (m WishlistSearch) encode(w *Writer) {
 	w.Uint32(m.Token)
 	w.String(m.Query)
 }

@@ -23,6 +23,8 @@ const (
 	TypeUploadRemoved = "upload.removed"
 	// Data is shares.Stats.
 	TypeShares = "shares"
+	// Data is a wishlist.Entry.
+	TypeWishlist = "wishlist"
 )
 
 // Event is one update. Data is marshalled to JSON for subscribers.
