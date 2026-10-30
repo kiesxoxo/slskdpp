@@ -148,6 +148,17 @@
     selectedHit = hitKey(a.sources[0]);
   }
 
+  let wished = $state(false);
+  async function addToWishlist() {
+    if (!view) return;
+    try {
+      await api.addWishlist(view.query, { formats, min_bitrate: minBitrate, min_files: minFiles || 0, free_slot_only: freeOnly }, false);
+      wished = true;
+    } catch (e) {
+      error = errorText(e);
+    }
+  }
+
   function slotLabel(h: Hit): string {
     return h.slot_free ? 'free slot' : `queue ${h.queue_length}`;
   }
@@ -192,6 +203,13 @@
     {:else}
       <div class="toolbar">
         <div class="summary">
+          <span class="wish">
+            {#if wished}
+              <a href={href(['wishlist'])}>On the wishlist</a>
+            {:else}
+              <button onclick={addToWishlist} title="Keep searching for this on a schedule">+ Wishlist</button>
+            {/if}
+          </span>
           {#if active}<span class="dot good pulse"></span>{/if}
           <strong>{plural(albums.length, 'album')}</strong>
           <span class="muted">
@@ -383,6 +401,15 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .wish {
+    order: 9;
+    margin-left: auto;
+    font-size: 13px;
+  }
+  .wish button {
+    padding: 3px 10px;
+    font-size: 13px;
   }
   .filters {
     display: flex;

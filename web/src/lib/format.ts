@@ -28,6 +28,16 @@ export function quality(h: Hit): string {
   return h.avg_bitrate ? `${h.avg_bitrate} kbps` : '? kbps';
 }
 
+// ago describes how long ago an ISO time was, roughly.
+export function ago(iso?: string): string {
+  if (!iso) return 'never';
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
 export function plural(n: number, word: string): string {
   return `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 }

@@ -142,6 +142,46 @@ export interface LocalFolders {
   folders: string[];
 }
 
+export interface SearchFilter {
+  formats?: string[];
+  min_bitrate?: number;
+  free_slot_only?: boolean;
+  min_files?: number;
+  exclude_users?: string[];
+}
+
+export interface WishlistEntry {
+  id: number;
+  query: string;
+  filter: SearchFilter;
+  auto_download: boolean;
+  enabled: boolean;
+  created: string;
+  last_run?: string;
+  last_search?: number;
+  matches: number;
+  running?: boolean;
+  got_user?: string;
+  got_folder?: string;
+  got_at?: string;
+}
+
+export interface ApiKey {
+  id: number;
+  name: string;
+  prefix: string;
+  created?: string;
+  last_used?: string;
+  from_config?: boolean;
+}
+
+export interface HookResult {
+  hook: string;
+  ok: boolean;
+  error?: string;
+  output?: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -207,6 +247,21 @@ export const api = {
   removeShare: (alias: string) => request<void>('DELETE', '/shares/' + encodeURIComponent(alias)),
   rescanShares: () => request<void>('POST', '/shares/rescan'),
   localFolders: (path: string) => request<LocalFolders>('GET', '/folders?path=' + encodeURIComponent(path)),
+
+  wishlist: () => request<{ interval_seconds: number; entries: WishlistEntry[] }>('GET', '/wishlist'),
+  addWishlist: (query: string, filter: SearchFilter, auto_download: boolean) =>
+    request<WishlistEntry>('POST', '/wishlist', { query, filter, auto_download }),
+  updateWishlist: (id: number, change: Partial<Pick<WishlistEntry, 'enabled' | 'auto_download' | 'filter' | 'query'>>) =>
+    request<WishlistEntry>('PATCH', `/wishlist/${id}`, change),
+  removeWishlist: (id: number) => request<void>('DELETE', `/wishlist/${id}`),
+  searchWishlist: (id: number) => request<void>('POST', `/wishlist/${id}/search`),
+
+  apiKeys: () => request<ApiKey[]>('GET', '/apikeys'),
+  createApiKey: (name: string) => request<ApiKey & { key: string }>('POST', '/apikeys', { name }),
+  revokeApiKey: (id: number) => request<void>('DELETE', `/apikeys/${id}`),
+
+  hooks: () => request<{ on_download: string; on_folder: string; webhook: string }>('GET', '/hooks'),
+  testHooks: () => request<HookResult[]>('POST', '/hooks/test'),
 };
 
 export function errorText(e: unknown): string {

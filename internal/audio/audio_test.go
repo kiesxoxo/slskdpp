@@ -263,3 +263,12 @@ func TestGarbage(t *testing.T) {
 		}
 	}
 }
+
+func TestMP3AfterLongJunk(t *testing.T) {
+	// Some files carry padding or a broken tag before the first frame;
+	// the probe looks further when the start shows no audio.
+	b := append(make([]byte, 20_000), mp3Frames(383)...)
+	if got, ok := Probe(save(t, "junk.mp3", b)); !ok || got.BitRate != 128 || got.Duration != 10 {
+		t.Errorf("%+v %v", got, ok)
+	}
+}

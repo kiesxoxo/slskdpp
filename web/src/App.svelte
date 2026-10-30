@@ -12,6 +12,8 @@
   import Downloads from './routes/Downloads.svelte';
   import Uploads from './routes/Uploads.svelte';
   import Shares from './routes/Shares.svelte';
+  import Wishlist from './routes/Wishlist.svelte';
+  import Settings from './routes/Settings.svelte';
 
   onMount(async () => {
     try {
@@ -55,7 +57,8 @@
     session.user = null;
   }
 
-  let page = $derived(['browse', 'downloads', 'uploads', 'shares'].includes(route.path[0]) ? route.path[0] : 'search');
+  const pages = ['browse', 'downloads', 'uploads', 'shares', 'wishlist', 'settings'];
+  let page = $derived(pages.includes(route.path[0]) ? route.path[0] : 'search');
 </script>
 
 {#if !session.checked}
@@ -75,12 +78,14 @@
         <a href={href(['uploads'])} class:active={page === 'uploads'}>
           Uploads{#if activeUploads}<span class="count">{activeUploads}</span>{/if}
         </a>
+        <a href={href(['wishlist'])} class:active={page === 'wishlist'}>Wishlist</a>
         <a href={href(['shares'])} class:active={page === 'shares'}>Shares</a>
       </nav>
       <span class="status" title={session.connected ? 'Connected to the Soulseek server' : 'Not connected to the Soulseek server'}>
         <span class="dot" class:good={session.connected} class:bad={!session.connected}></span>
         <span class="ellipsis">{session.connected ? session.soulseekUser : 'offline'}</span>
       </span>
+      <a class="gear" href={href(['settings'])} class:active={page === 'settings'} title="Settings" aria-label="Settings">⚙</a>
       <button class="ghost" onclick={logout}>Log out</button>
     </header>
     <main>
@@ -90,6 +95,10 @@
         <Uploads />
       {:else if page === 'shares'}
         <Shares />
+      {:else if page === 'wishlist'}
+        <Wishlist />
+      {:else if page === 'settings'}
+        <Settings />
       {:else if page === 'browse'}
         {#key route.path[1]}
           <Browse user={route.path[1] ?? ''} folder={route.query.get('folder') ?? ''} />
@@ -147,6 +156,18 @@
   nav a:hover {
     text-decoration: none;
     background: var(--surface-2);
+  }
+  .gear {
+    color: var(--muted);
+    font-size: 18px;
+    padding: 2px 6px;
+    border-radius: var(--radius);
+  }
+  .gear:hover,
+  .gear.active {
+    color: var(--text);
+    background: var(--surface-2);
+    text-decoration: none;
   }
   .count {
     margin-left: 6px;

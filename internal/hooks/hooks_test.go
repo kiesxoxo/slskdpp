@@ -41,6 +41,30 @@ func TestCommandGetsEvent(t *testing.T) {
 	}
 }
 
+func TestHooksRunInOrder(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "order.txt")
+	r := New(Config{
+		// The first hook is slow; the rest must still wait their turn.
+		OnDownload: `case "$SLSKDPP_PATH" in 1) sleep 0.3;; esac; echo "$SLSKDPP_PATH" >> "` + out + `"`,
+		OnFolder:   `echo folder >> "` + out + `"`,
+		Logger:     slog.New(slog.DiscardHandler),
+	})
+	for _, p := range []string{"1", "2", "3"} {
+		r.Fire(Event{Event: DownloadCompleted, Path: p})
+	}
+	r.Fire(Event{Event: FolderCompleted, Path: "f"})
+	var got string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		b, _ := os.ReadFile(out)
+		if got = string(b); strings.Count(got, "\n") == 4 {
+			break
+		}
+	}
+	if got != "1\n2\n3\nfolder\n" {
+		t.Errorf("hooks ran as %q", got)
+	}
+}
+
 func TestWebhookRetries(t *testing.T) {
 	var calls atomic.Int32
 	got := make(chan Event, 1)

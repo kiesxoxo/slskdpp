@@ -232,13 +232,9 @@ func parseMPEGHeader(b []byte) (mpegFrame, bool) {
 	return f, f.length > 4
 }
 
-func probeMP3(r io.ReaderAt, size int64) (Info, bool) {
-	start := skipID3v2(r, 0)
-	buf := readAt(r, start, 256<<10)
-	// Find a frame whose successor is where its length says, so stray
-	// sync bytes in leftover tag data do not fool us.
-	pos := -1
-	var fr mpegFrame
+// findFrame finds a frame whose successor is where its length says, so
+// stray sync bytes in leftover tag data do not fool us.
+func findFrame(buf []byte) (int, mpegFrame) {
 	for i := 0; i+4 <= len(buf); i++ {
 		if buf[i] != 0xff {
 			continue
@@ -253,9 +249,26 @@ func probeMP3(r io.ReaderAt, size int64) (Info, bool) {
 			if !ok || g.version != f.version || g.layer != f.layer || g.sampleRate != f.sampleRate {
 				continue
 			}
+		} else if next < len(buf) {
+			continue // the successor would be cut off: look further
 		}
-		pos, fr = i, f
-		break
+		return i, f
+	}
+	return -1, mpegFrame{}
+}
+
+func probeMP3(r io.ReaderAt, size int64) (Info, bool) {
+	start := skipID3v2(r, 0)
+	// Audio nearly always starts right after the tag; read a little first
+	// so scanning a large library stays cheap, and more only if needed.
+	var buf []byte
+	pos := -1
+	var fr mpegFrame
+	for _, n := range []int{16 << 10, 256 << 10} {
+		buf = readAt(r, start, n)
+		if pos, fr = findFrame(buf); pos >= 0 || len(buf) < n {
+			break
+		}
 	}
 	if pos < 0 {
 		return Info{}, false
@@ -346,10 +359,16 @@ func probeOgg(r io.ReaderAt, size int64) (Info, bool) {
 		return Info{}, false
 	}
 	// The last page's granule position is the stream length in samples.
-	tailLen := int64(64 << 10)
-	tailOff := max(0, size-tailLen)
-	tail := readAt(r, tailOff, int(size-tailOff))
-	i := bytes.LastIndex(tail, []byte("OggS"))
+	// Pages are a few kilobytes; widen the look only if needed.
+	var tail []byte
+	i := -1
+	for _, n := range []int64{16 << 10, 128 << 10} {
+		off := max(0, size-n)
+		tail = readAt(r, off, int(size-off))
+		if i = bytes.LastIndex(tail, []byte("OggS")); (i >= 0 && len(tail) >= i+14) || off == 0 {
+			break
+		}
+	}
 	if i < 0 || len(tail) < i+14 {
 		return Info{}, false
 	}

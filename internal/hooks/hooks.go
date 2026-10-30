@@ -50,14 +50,19 @@ type Config struct {
 	Logger         *slog.Logger
 }
 
-// Runner fires hooks in the background, a few at a time.
+// Runner fires hooks in the background, one at a time and in order, so
+// a folder's hook runs after the hooks of its files and importers that
+// cannot run twice at once are safe.
 type Runner struct {
 	cfg     Config
 	log     *slog.Logger
-	sem     chan struct{}
+	queue   chan Event
 	client  *http.Client
 	retries []time.Duration
 }
+
+// queueSize is how many events may wait; beyond it they are dropped.
+const queueSize = 1024
 
 func New(cfg Config) *Runner {
 	if cfg.CommandTimeout <= 0 {
@@ -67,12 +72,33 @@ func New(cfg Config) *Runner {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Runner{
+	r := &Runner{
 		cfg:     cfg,
 		log:     log.With("component", "hooks"),
-		sem:     make(chan struct{}, 4),
+		queue:   make(chan Event, queueSize),
 		client:  &http.Client{Timeout: 15 * time.Second},
 		retries: []time.Duration{2 * time.Second, 10 * time.Second, 30 * time.Second},
+	}
+	if cfg.OnDownload != "" || cfg.OnFolder != "" || cfg.Webhook != "" {
+		go r.work()
+	}
+	return r
+}
+
+func (r *Runner) work() {
+	for e := range r.queue {
+		if cmd := r.command(e.Event); cmd != "" {
+			if out, err := r.run(context.Background(), cmd, e); err != nil {
+				r.log.Warn("hook command failed", "event", e.Event, "path", e.Path, "err", err, "output", out)
+			} else {
+				r.log.Info("hook command ran", "event", e.Event, "path", e.Path)
+			}
+		}
+		if r.cfg.Webhook != "" {
+			if err := r.post(context.Background(), e, r.retries); err != nil {
+				r.log.Warn("webhook failed", "event", e.Event, "err", err)
+			}
+		}
 	}
 }
 
@@ -94,26 +120,14 @@ func (r *Runner) Fire(e Event) {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
-	cmd := r.command(e.Event)
-	if cmd == "" && r.cfg.Webhook == "" {
+	if r.command(e.Event) == "" && r.cfg.Webhook == "" {
 		return
 	}
-	go func() {
-		r.sem <- struct{}{}
-		defer func() { <-r.sem }()
-		if cmd != "" {
-			if out, err := r.run(context.Background(), cmd, e); err != nil {
-				r.log.Warn("hook command failed", "event", e.Event, "path", e.Path, "err", err, "output", out)
-			} else {
-				r.log.Info("hook command ran", "event", e.Event, "path", e.Path)
-			}
-		}
-		if r.cfg.Webhook != "" {
-			if err := r.post(context.Background(), e, r.retries); err != nil {
-				r.log.Warn("webhook failed", "event", e.Event, "err", err)
-			}
-		}
-	}()
+	select {
+	case r.queue <- e:
+	default:
+		r.log.Warn("too many hooks waiting; dropping event", "event", e.Event, "path", e.Path)
+	}
 }
 
 // Result is the outcome of one hook in a test.
