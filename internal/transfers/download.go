@@ -89,7 +89,8 @@ type View struct {
 	State       State     `json:"state"`
 	Error       string    `json:"error,omitempty"`
 	Attempts    int       `json:"attempts"`
-	Sources     int       `json:"sources"` // sources tried, including the current one
+	Sources     int       `json:"sources"`             // sources tried, including the current one
+	Searching   bool      `json:"searching,omitempty"` // looking for another source
 	QueuePlace  uint32    `json:"queue_place,omitempty"`
 	Speed       uint64    `json:"speed"` // bytes per second while transferring
 	NextAttempt time.Time `json:"next_attempt,omitzero"`
@@ -103,7 +104,8 @@ func (d *Download) view() View {
 		ID: d.ID, Username: d.Username, Filename: d.Filename,
 		Name: path.Base(d.Dest), Folder: path.Dir(d.Dest),
 		Size: d.Size, Bytes: d.Bytes, State: d.State, Error: d.Error, Attempts: d.Attempts,
-		Sources: len(d.Tried) + 1, Created: d.Created, Updated: d.Updated, Completed: d.Completed,
+		Sources: len(d.Tried) + 1, Searching: d.searching,
+		Created: d.Created, Updated: d.Updated, Completed: d.Completed,
 	}
 	if d.State == StateRemoteQueued {
 		v.QueuePlace = d.queuePlace

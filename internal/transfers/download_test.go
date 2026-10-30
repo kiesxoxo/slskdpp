@@ -315,6 +315,9 @@ func TestDeniedSwitchesSource(t *testing.T) {
 	var q string
 	select {
 	case q = <-e.snet.queries:
+		if v, _ := e.m.Get(v.ID); !v.Searching {
+			t.Error("view does not show the source search")
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no search for another source")
 	}

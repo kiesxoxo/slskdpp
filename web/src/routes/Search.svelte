@@ -7,6 +7,7 @@
   import { href, navigate } from '../lib/router.svelte';
   import { session } from '../lib/session.svelte';
   import VirtualList from '../lib/VirtualList.svelte';
+  import DownloadButton from '../lib/DownloadButton.svelte';
 
   let { id }: { id: number | null } = $props();
 
@@ -270,10 +271,20 @@
         <span class="mono ellipsis" title={source.folder}>{source.folder}</span>
         <a href={href(['browse', source.user], { folder: source.folder })}>Browse {source.user}</a>
       </div>
+      {#key hitKey(source)}
+        <div class="get">
+          <DownloadButton
+            username={source.user}
+            folder={source.folder}
+            files={source.files.map((f) => ({ path: f.path, size: f.size }))}
+            label="Download folder"
+          />
+        </div>
+      {/key}
       <div class="files">
         <table class="files">
           <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th></tr>
+            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th><th class="act"></th></tr>
           </thead>
           <tbody>
             {#each source.files as f (f.path)}
@@ -282,6 +293,9 @@
                 <td class="num">{size(f.size)}</td>
                 <td class="num opt">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
                 <td class="num">{duration(f.duration)}</td>
+                <td class="act">
+                  <DownloadButton compact username={source.user} files={[{ path: f.path, size: f.size }]} label="Download {f.name}" />
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -493,6 +507,15 @@
   }
   .folder a {
     white-space: nowrap;
+  }
+  .get {
+    padding: 0 0 10px;
+  }
+  th.act {
+    width: 44px;
+  }
+  td.act {
+    text-align: right;
   }
   .files {
     flex: 1;

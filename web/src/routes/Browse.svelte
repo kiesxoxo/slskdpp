@@ -5,6 +5,7 @@
   import { duration, plural, size } from '../lib/format';
   import { navigate } from '../lib/router.svelte';
   import VirtualList from '../lib/VirtualList.svelte';
+  import DownloadButton from '../lib/DownloadButton.svelte';
 
   let { user, folder }: { user: string; folder: string } = $props();
 
@@ -189,11 +190,21 @@
       <div class="head">
         <h2 class="mono ellipsis" title={selected.path}>{selected.path}</h2>
         <p class="muted small">{plural(selected.dir.files.length, 'file')} · {size(selectedBytes)}</p>
+        {#key selected.path}
+          <div class="get">
+            <DownloadButton
+              username={user}
+              folder={selected.dir.name}
+              files={selected.dir.files.map((f) => ({ path: f.path, size: f.size }))}
+              label="Download folder"
+            />
+          </div>
+        {/key}
       </div>
       <div class="scroll">
         <table class="files">
           <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th></tr>
+            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th><th class="act"></th></tr>
           </thead>
           <tbody>
             {#each selected.dir.files as f (f.path)}
@@ -202,9 +213,12 @@
                 <td class="num">{size(f.size)}</td>
                 <td class="num opt">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
                 <td class="num">{duration(f.duration)}</td>
+                <td class="act">
+                  <DownloadButton compact username={user} files={[{ path: f.path, size: f.size }]} label="Download {f.name}" />
+                </td>
               </tr>
             {:else}
-              <tr><td colspan="4" class="muted">No files directly in this folder.</td></tr>
+              <tr><td colspan="5" class="muted">No files directly in this folder.</td></tr>
             {/each}
           </tbody>
         </table>
@@ -295,6 +309,15 @@
   }
   .head p {
     margin: 4px 0 0;
+  }
+  .get {
+    margin-top: 10px;
+  }
+  th.act {
+    width: 44px;
+  }
+  td.act {
+    text-align: right;
   }
   .scroll {
     flex: 1;

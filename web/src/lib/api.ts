@@ -56,6 +56,42 @@ export interface ServerState {
   username: string;
 }
 
+export type DownloadState =
+  | 'queued'
+  | 'requested'
+  | 'queued_remote'
+  | 'initializing'
+  | 'transferring'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface Download {
+  id: number;
+  username: string;
+  filename: string;
+  name: string;
+  folder: string;
+  size: number;
+  bytes: number;
+  state: DownloadState;
+  error?: string;
+  attempts: number;
+  sources: number;
+  searching?: boolean;
+  queue_place?: number;
+  speed: number;
+  next_attempt?: string;
+  created: string;
+  updated: string;
+  completed?: string;
+}
+
+export interface FileRequest {
+  path: string;
+  size: number;
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -100,6 +136,16 @@ export const api = {
   hits: (id: number) => request<Hit[]>('GET', `/searches/${id}/hits`),
 
   browse: (u: string) => request<BrowseResult>('GET', user(u) + '/browse'),
+
+  downloads: () => request<Download[]>('GET', '/downloads'),
+  download: (username: string, files: FileRequest[]) =>
+    request<Download[]>('POST', '/downloads', { username, files }),
+  downloadFolder: (username: string, folder: string, files: FileRequest[]) =>
+    request<Download[]>('POST', '/downloads/folder', { username, folder, files }),
+  cancelDownload: (id: number) => request<void>('POST', `/downloads/${id}/cancel`),
+  retryDownload: (id: number) => request<void>('POST', `/downloads/${id}/retry`),
+  removeDownload: (id: number) => request<void>('DELETE', `/downloads/${id}`),
+  clearDownloads: (states: DownloadState[]) => request<{ removed: number }>('POST', '/downloads/clear', { states }),
 };
 
 export function errorText(e: unknown): string {

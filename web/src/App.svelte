@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type ServerState } from './lib/api';
+  import { api, type Download, type ServerState } from './lib/api';
+  import { downloads, isActive, loadDownloads, removeDownload, updateDownload } from './lib/downloads.svelte';
   import { subscribe } from './lib/events';
   import { route, href } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
   import Login from './routes/Login.svelte';
   import Search from './routes/Search.svelte';
   import Browse from './routes/Browse.svelte';
+  import Downloads from './routes/Downloads.svelte';
 
   onMount(async () => {
     try {
@@ -17,23 +19,33 @@
     session.checked = true;
   });
 
-  // Global events only (search 0): keeps the connection indicator live.
+  // Global events only (search 0): the connection indicator and
+  // downloads stay live on every page.
   $effect(() => {
     if (!session.user) return;
-    return subscribe(0, {
-      'server.state': (s: ServerState) => {
-        session.connected = s.connected;
-        session.soulseekUser = s.username;
+    loadDownloads();
+    return subscribe(
+      0,
+      {
+        'server.state': (s: ServerState) => {
+          session.connected = s.connected;
+          session.soulseekUser = s.username;
+        },
+        download: (d: Download) => updateDownload(d),
+        'download.removed': (e: { id: number }) => removeDownload(e.id),
       },
-    });
+      loadDownloads,
+    );
   });
+
+  let activeDownloads = $derived([...downloads.values()].filter(isActive).length);
 
   async function logout() {
     await api.logout().catch(() => {});
     session.user = null;
   }
 
-  let page = $derived(route.path[0] === 'browse' ? 'browse' : 'search');
+  let page = $derived(['browse', 'downloads'].includes(route.path[0]) ? route.path[0] : 'search');
 </script>
 
 {#if !session.checked}
@@ -47,6 +59,9 @@
       <nav>
         <a href={href(['search'])} class:active={page === 'search'}>Search</a>
         <a href={href(['browse'])} class:active={page === 'browse'}>Browse</a>
+        <a href={href(['downloads'])} class:active={page === 'downloads'}>
+          Downloads{#if activeDownloads}<span class="count">{activeDownloads}</span>{/if}
+        </a>
       </nav>
       <span class="status" title={session.connected ? 'Connected to the Soulseek server' : 'Not connected to the Soulseek server'}>
         <span class="dot" class:good={session.connected} class:bad={!session.connected}></span>
@@ -55,7 +70,9 @@
       <button class="ghost" onclick={logout}>Log out</button>
     </header>
     <main>
-      {#if page === 'browse'}
+      {#if page === 'downloads'}
+        <Downloads />
+      {:else if page === 'browse'}
         {#key route.path[1]}
           <Browse user={route.path[1] ?? ''} folder={route.query.get('folder') ?? ''} />
         {/key}
@@ -107,6 +124,15 @@
     text-decoration: none;
     background: var(--surface-2);
   }
+  .count {
+    margin-left: 6px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
   nav a.active {
     color: var(--text);
     background: var(--surface-2);
@@ -129,8 +155,13 @@
       gap: 8px;
       padding: 8px;
     }
-    .brand {
+    .brand,
+    .status .ellipsis {
       display: none;
+    }
+    header button {
+      white-space: nowrap;
+      padding: 7px 8px;
     }
   }
 </style>
