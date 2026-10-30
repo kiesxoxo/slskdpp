@@ -79,23 +79,30 @@ func NewManager(net Network, opts Options) *Manager {
 }
 
 // Start sends a search to the network.
-func (m *Manager) Start(query string) (*Search, error) {
+func (m *Manager) Start(query string) (*Search, error) { return m.start(query, false) }
+
+// StartBackground sends a search that List leaves out, for searches the
+// user did not ask for, such as looking for another source of a file.
+func (m *Manager) StartBackground(query string) (*Search, error) { return m.start(query, true) }
+
+func (m *Manager) start(query string, background bool) (*Search, error) {
 	query = strings.Join(strings.Fields(query), " ")
 	if query == "" {
 		return nil, errors.New("search: empty query")
 	}
 	now := m.now()
 	s := &Search{
-		ID:       m.net.NewToken(),
-		Query:    query,
-		Started:  now,
-		Ends:     now.Add(m.opts.Window),
-		terms:    queryTerms(query),
-		now:      m.now,
-		hits:     make(map[hitKey]*FolderHit),
-		users:    make(map[string]struct{}),
-		maxResp:  m.opts.MaxResponses,
-		maxFiles: m.opts.MaxFiles,
+		ID:         m.net.NewToken(),
+		Query:      query,
+		Background: background,
+		Started:    now,
+		Ends:       now.Add(m.opts.Window),
+		terms:      queryTerms(query),
+		now:        m.now,
+		hits:       make(map[hitKey]*FolderHit),
+		users:      make(map[string]struct{}),
+		maxResp:    m.opts.MaxResponses,
+		maxFiles:   m.opts.MaxFiles,
 	}
 	s.onDone = func() { m.opts.OnDone(s) }
 	var evicted []*Search
@@ -129,12 +136,13 @@ func (m *Manager) Get(id uint32) (*Search, bool) {
 	return s, ok
 }
 
-// List returns the kept searches, newest first.
+// List returns the kept searches, newest first, leaving out background
+// ones.
 func (m *Manager) List() []*Search {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.expireLocked(m.now())
-	out := m.listLocked()
+	out := slices.DeleteFunc(m.listLocked(), func(s *Search) bool { return s.Background })
 	slices.SortFunc(out, func(a, b *Search) int {
 		return cmp.Or(b.Started.Compare(a.Started), cmp.Compare(b.ID, a.ID))
 	})
@@ -184,10 +192,11 @@ func (m *Manager) expireLocked(now time.Time) {
 
 // Search is one outgoing search and the folder hits collected so far.
 type Search struct {
-	ID      uint32
-	Query   string
-	Started time.Time
-	Ends    time.Time // responses after this are dropped
+	ID         uint32
+	Query      string
+	Started    time.Time
+	Ends       time.Time // responses after this are dropped
+	Background bool      // started by slskdpp itself, not listed
 
 	terms    []string
 	now      func() time.Time

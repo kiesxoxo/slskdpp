@@ -253,3 +253,18 @@ func TestOnDone(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+func TestBackgroundSearchesAreNotListed(t *testing.T) {
+	m, net, _ := newTestManager(Options{})
+	fg, _ := m.Start("visible")
+	bg, err := m.StartBackground("hidden")
+	if err != nil || len(net.queries) != 2 {
+		t.Fatalf("background search not sent: %v %v", err, net.queries)
+	}
+	if l := m.List(); len(l) != 1 || l[0] != fg {
+		t.Errorf("List = %v", l)
+	}
+	if got, ok := m.Get(bg.ID); !ok || got != bg {
+		t.Error("background search not found by ID")
+	}
+}
