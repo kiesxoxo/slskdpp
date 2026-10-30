@@ -22,16 +22,19 @@ type Handlers struct {
 	Server func(m any)
 	// Peer receives peer messages that do not answer one of our requests.
 	Peer func(username string, m any)
+	// State is told when the server session starts or ends.
+	State func(loggedIn bool)
 }
 
 // Client is a Soulseek session: the server connection plus the peer layer,
 // with request/response matching for browse, folder and user info
 // requests.
 type Client struct {
-	srv    *Server
-	peers  *Peers
-	h      Handlers
-	tokens atomic.Uint32
+	srv      *Server
+	peers    *Peers
+	h        Handlers
+	username string
+	tokens   atomic.Uint32
 
 	mu      sync.Mutex
 	waiters map[waitKey][]chan any
@@ -57,6 +60,8 @@ func New(cfg ServerConfig, h Handlers) *Client {
 	c := &Client{h: h, waiters: make(map[waitKey][]chan any)}
 	c.tokens.Store(rand.Uint32N(1 << 30))
 	c.srv = NewServer(cfg, c.onServer)
+	c.srv.onState = h.State
+	c.username = cfg.Username
 	c.peers = newPeers(cfg.Username, cfg.ListenPort, cfg.Logger, c.srv, c.NewToken, c.onPeer)
 	return c
 }
@@ -72,6 +77,12 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) Server() *Server { return c.srv }
+
+// Username is the account this client logs in as.
+func (c *Client) Username() string { return c.username }
+
+// LoggedIn reports whether the server session is up.
+func (c *Client) LoggedIn() bool { return c.srv.LoggedIn() }
 
 func (c *Client) Peers() *Peers { return c.peers }
 

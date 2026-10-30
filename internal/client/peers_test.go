@@ -240,7 +240,11 @@ func TestPeerDirectConnection(t *testing.T) {
 	h := newHub(t)
 	var bob *Client
 	bob = startClient(t, ctx, h, "bob", Handlers{Peer: sharingPeer(&bob)})
-	alice := startClient(t, ctx, h, "alice", Handlers{})
+	states := make(chan bool, 4)
+	alice := startClient(t, ctx, h, "alice", Handlers{State: func(up bool) { states <- up }})
+	if up := <-states; !up || !alice.LoggedIn() {
+		t.Errorf("state %v, LoggedIn %v after login", up, alice.LoggedIn())
+	}
 	testRequests(t, ctx, alice)
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -33,6 +33,9 @@ type Options struct {
 	// OnHit is called, outside any lock, for each folder hit a response
 	// adds. It must not block.
 	OnHit func(s *Search, h FolderHit)
+	// OnDone is called once when a search stops accepting responses,
+	// because its window closed or it was stopped. It must not block.
+	OnDone func(s *Search)
 }
 
 func (o *Options) defaults() {
@@ -54,6 +57,9 @@ func (o *Options) defaults() {
 	}
 	if o.OnHit == nil {
 		o.OnHit = func(*Search, FolderHit) {}
+	}
+	if o.OnDone == nil {
+		o.OnDone = func(*Search) {}
 	}
 }
 
@@ -91,18 +97,27 @@ func (m *Manager) Start(query string) (*Search, error) {
 		maxResp:  m.opts.MaxResponses,
 		maxFiles: m.opts.MaxFiles,
 	}
+	s.onDone = func() { m.opts.OnDone(s) }
+	var evicted []*Search
 	m.mu.Lock()
 	m.expireLocked(now)
 	for len(m.searches) >= m.opts.MaxSearches {
 		oldest := slices.MinFunc(m.listLocked(), func(a, b *Search) int { return a.Started.Compare(b.Started) })
 		delete(m.searches, oldest.ID)
+		evicted = append(evicted, oldest)
 	}
 	m.searches[s.ID] = s
 	m.mu.Unlock()
+	for _, old := range evicted {
+		old.Stop()
+	}
 	if err := m.net.Search(s.ID, query); err != nil {
 		m.Remove(s.ID)
 		return nil, err
 	}
+	s.mu.Lock()
+	s.timer = time.AfterFunc(m.opts.Window, s.Stop)
+	s.mu.Unlock()
 	return s, nil
 }
 
@@ -126,10 +141,15 @@ func (m *Manager) List() []*Search {
 	return out
 }
 
+// Remove stops a search and forgets it.
 func (m *Manager) Remove(id uint32) {
 	m.mu.Lock()
+	s := m.searches[id]
 	delete(m.searches, id)
 	m.mu.Unlock()
+	if s != nil {
+		s.Stop()
+	}
 }
 
 // HandleResponse adds a peer's search response to the search it answers.
@@ -173,6 +193,9 @@ type Search struct {
 	now      func() time.Time
 	maxResp  int
 	maxFiles int
+	onDone   func()
+	timer    *time.Timer
+	doneOnce sync.Once
 
 	mu      sync.Mutex
 	stopped bool
@@ -205,7 +228,16 @@ func (s *Search) Stats() Stats {
 func (s *Search) Stop() {
 	s.mu.Lock()
 	s.stopped = true
+	t := s.timer
 	s.mu.Unlock()
+	s.doneOnce.Do(func() {
+		if t != nil {
+			t.Stop()
+		}
+		if s.onDone != nil {
+			s.onDone()
+		}
+	})
 }
 
 func (s *Search) activeLocked() bool { return !s.stopped && s.now().Before(s.Ends) }
@@ -245,7 +277,7 @@ func (s *Search) add(username string, r protocol.FileSearchResponse) []FolderHit
 		if s.files >= s.maxFiles {
 			break
 		}
-		f := newFile(pf)
+		f := ConvertFile(pf)
 		folder, _ := splitPath(f.Path)
 		k := hitKey{username, folder}
 		h := s.hits[k]

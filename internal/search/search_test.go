@@ -227,3 +227,29 @@ func TestStartErrors(t *testing.T) {
 		t.Error("failed search kept")
 	}
 }
+
+func TestOnDone(t *testing.T) {
+	done := make(chan uint32, 4)
+	m, _, _ := newTestManager(Options{Window: 50 * time.Millisecond, OnDone: func(s *Search) { done <- s.ID }})
+	s1, _ := m.Start("window")
+	s2, _ := m.Start("removed")
+	m.Remove(s2.ID)
+	got := map[uint32]bool{}
+	for range 2 {
+		select {
+		case id := <-done:
+			got[id] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("OnDone not called")
+		}
+	}
+	if !got[s1.ID] || !got[s2.ID] {
+		t.Errorf("OnDone for %v", got)
+	}
+	s1.Stop()
+	select {
+	case id := <-done:
+		t.Errorf("OnDone called twice for %d", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+}

@@ -65,6 +65,8 @@ type Server struct {
 	cfg     ServerConfig
 	log     *slog.Logger
 	handler func(any)
+	// onState, when set, is told each time a session starts or ends.
+	onState func(loggedIn bool)
 
 	mu     sync.Mutex
 	sendCh chan []byte   // nil while logged out
@@ -190,11 +192,13 @@ func (s *Server) session(ctx context.Context) error {
 	s.login = resp
 	close(s.ready)
 	s.mu.Unlock()
+	s.notifyState(true)
 	defer func() {
 		s.mu.Lock()
 		s.sendCh = nil
 		s.ready = make(chan struct{})
 		s.mu.Unlock()
+		s.notifyState(false)
 	}()
 
 	writeErr := make(chan error, 1)
@@ -206,6 +210,12 @@ func (s *Server) session(ctx context.Context) error {
 		readErr = werr
 	}
 	return readErr
+}
+
+func (s *Server) notifyState(loggedIn bool) {
+	if s.onState != nil {
+		s.onState(loggedIn)
+	}
 }
 
 func (s *Server) writeLoop(ctx context.Context, conn net.Conn, sendCh <-chan []byte) error {

@@ -2,6 +2,7 @@ package search
 
 import (
 	"cmp"
+	"fmt"
 	"math"
 	"path"
 	"regexp"
@@ -40,6 +41,9 @@ type FolderHit struct {
 	QueueLength uint32   `json:"queue_length"`
 	UploadSpeed uint32   `json:"upload_speed"` // bytes per second
 	Score       float64  `json:"score"`
+	// AlbumKey is shared by hits that may be the same release; Albums
+	// further splits a key's hits by total size.
+	AlbumKey string `json:"album_key"`
 }
 
 // Album is folder hits from different users that look like the same
@@ -100,7 +104,8 @@ func splitPath(p string) (folder, name string) {
 	return p[:i], p[i+1:]
 }
 
-func newFile(f protocol.File) File {
+// ConvertFile turns a file from the wire into its API form.
+func ConvertFile(f protocol.File) File {
 	_, name := splitPath(f.Name)
 	ext := normExt(path.Ext(name))
 	if ext == "" {
@@ -166,6 +171,7 @@ func summarize(h *FolderHit, r protocol.FileSearchResponse, terms []string) {
 	h.QueueLength = r.QueueLength
 	h.UploadSpeed = r.AvgSpeed
 	h.Score = score(h, terms)
+	h.AlbumKey = fmt.Sprintf("%s|%d", albumName(h.Folder), h.FileCount)
 }
 
 // score ranks a folder hit; higher is better. A free slot matters most,
@@ -245,16 +251,12 @@ const sizeTolerance = 0.03
 // groupAlbums dedupes ranked hits into albums, ordered by their best
 // source.
 func groupAlbums(hits []FolderHit) []Album {
-	type key struct {
-		name  string
-		files int
-	}
 	var albums []Album
-	index := map[key][]int{}
+	index := map[string][]int{}
 	for _, h := range hits {
-		k := key{albumName(h.Folder), h.FileCount}
+		k := h.AlbumKey
 		found := -1
-		if k.name != "" {
+		if !strings.HasPrefix(k, "|") { // folders with no usable name stay alone
 			for _, i := range index[k] {
 				if closeSize(albums[i].TotalSize, h.TotalSize) {
 					found = i
