@@ -308,7 +308,7 @@ message may be, by type. It decodes only a few large messages at a time.
 
 ## Building from source
 
-You need Go 1.26 and Node.js 22.
+You need Go 1.26.10 or newer (older Go fetches it automatically) and Node.js 22.
 
 ```bash
 make build      # web UI (npm) and the static binary in bin/slskdpp
