@@ -123,41 +123,54 @@ func flac(secs uint64, audio int) []byte {
 	return b
 }
 
-// TestEndToEnd runs two complete instances against a test server: one
-// shares an album, the other finds it, browses it and downloads it.
-func TestEndToEnd(t *testing.T) {
-	ts, err := testserver.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ts.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	music := t.TempDir()
-	album := filepath.Join(music, "Artist", "Testalbum")
-	os.MkdirAll(album, 0o755)
+// album writes a test album of three FLACs under music and returns
+// their contents by name.
+func album(t *testing.T, music string) map[string][]byte {
+	t.Helper()
+	dir := filepath.Join(music, "Artist", "Testalbum")
+	os.MkdirAll(dir, 0o755)
 	originals := map[string][]byte{}
 	for i, secs := range []uint64{61, 62, 63} {
 		name := fmt.Sprintf("0%d - Track.flac", i+1)
 		data := flac(secs, 300_000+i)
 		originals[name] = data
-		os.WriteFile(filepath.Join(album, name), data, 0o644)
+		os.WriteFile(filepath.Join(dir, name), data, 0o644)
 	}
+	return originals
+}
 
-	sharer := start(t, ctx, ts.Addr(), "sharer", func(c *config.Config) {
+// pair starts a sharer with the test album and a fetcher.
+func pair(t *testing.T, ctx context.Context, fetcherCfg func(*config.Config)) (sharer, fetcher *instance, originals map[string][]byte) {
+	t.Helper()
+	ts, err := testserver.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ts.Close() })
+	music := t.TempDir()
+	originals = album(t, music)
+	sharer = start(t, ctx, ts.Addr(), "sharer", func(c *config.Config) {
 		c.Shares = []string{"Music=" + music}
 	})
-	hookOut := filepath.Join(t.TempDir(), "hook.txt")
-	fetcher := start(t, ctx, ts.Addr(), "fetcher", func(c *config.Config) {
-		c.Hooks.OnFolder = `echo "$SLSKDPP_EVENT $SLSKDPP_FILES $SLSKDPP_USERNAME" > "` + hookOut + `"`
-	})
+	fetcher = start(t, ctx, ts.Addr(), "fetcher", fetcherCfg)
 	eventually(t, "the sharer's index", 10*time.Second, func() bool {
 		var r struct{ Stats struct{ Files int } }
 		sharer.call("GET", "/api/v1/shares", nil, &r)
 		return r.Stats.Files == 3
 	})
 	eventually(t, "both on the server", 5*time.Second, func() bool { return ts.Online("sharer") && ts.Online("fetcher") })
+	return sharer, fetcher, originals
+}
+
+// TestEndToEnd runs two complete instances against a test server: one
+// shares an album, the other finds it, browses it and downloads it.
+func TestEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	hookOut := filepath.Join(t.TempDir(), "hook.txt")
+	sharer, fetcher, originals := pair(t, ctx, func(c *config.Config) {
+		c.Hooks.OnFolder = `echo "$SLSKDPP_EVENT $SLSKDPP_FILES $SLSKDPP_USERNAME" > "` + hookOut + `"`
+	})
 
 	// Search: the sharer answers from its index, with audio details.
 	var s struct{ ID uint32 }
@@ -227,3 +240,107 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("sharer's uploads %+v", up.Uploads)
 	}
 }
+
+// TestSlskdCompat walks through what soularr does with slskd's API:
+// search, read responses, list the directory, enqueue, poll each file,
+// clear completed.
+func TestSlskdCompat(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, fetcher, originals := pair(t, ctx, nil)
+
+	var version string
+	fetcher.call("GET", "/api/v0/application/version", nil, &version)
+	if version != compatVersionForTest() {
+		t.Errorf("version %q", version)
+	}
+
+	id := "6f1c1d0e-4b0a-11ef-9a4f-0242ac120002"
+	var state map[string]any
+	if code := fetcher.call("POST", "/api/v0/searches", map[string]any{"id": id, "searchText": "artist testalbum", "searchTimeout": 1500}, &state); code != 200 || state["id"] != id || state["state"] != "InProgress" {
+		t.Fatalf("search: %d %v", code, state)
+	}
+	eventually(t, "the search to finish", 10*time.Second, func() bool {
+		fetcher.call("GET", "/api/v0/searches/"+id+"?includeResponses=false", nil, &state)
+		return state["state"] != "InProgress"
+	})
+	var responses []struct {
+		Username          string
+		HasFreeUploadSlot bool
+		Files             []struct {
+			Filename   string
+			Size       uint64
+			SampleRate int
+			BitDepth   int
+			Length     int
+		}
+	}
+	fetcher.call("GET", "/api/v0/searches/"+id+"/responses", nil, &responses)
+	if len(responses) != 1 || responses[0].Username != "sharer" || len(responses[0].Files) != 3 {
+		t.Fatalf("responses %+v", responses)
+	}
+	f := responses[0].Files[0]
+	if f.SampleRate != 44100 || f.BitDepth != 16 || f.Length != 61 || !strings.HasPrefix(f.Filename, `Music\Artist\Testalbum\`) {
+		t.Errorf("file %+v", f)
+	}
+
+	// soularr lists the directory (bare names, as a list) and queues it
+	// with full paths.
+	dir := f.Filename[:strings.LastIndex(f.Filename, `\`)]
+	var dirs []struct {
+		Name  string
+		Files []struct {
+			Filename string
+			Size     uint64
+		}
+	}
+	fetcher.call("POST", "/api/v0/users/sharer/directory", map[string]string{"directory": dir}, &dirs)
+	if len(dirs) != 1 || len(dirs[0].Files) != 3 || dirs[0].Files[0].Filename != "01 - Track.flac" {
+		t.Fatalf("directory %+v", dirs)
+	}
+	var queue []map[string]any
+	for _, df := range dirs[0].Files {
+		queue = append(queue, map[string]any{"filename": dir + `\` + df.Filename, "size": df.Size})
+	}
+	if code := fetcher.call("POST", "/api/v0/transfers/downloads/sharer", queue, nil); code != 201 {
+		t.Fatalf("enqueue: %d", code)
+	}
+	var transfer struct {
+		Username    string
+		Directories []struct {
+			Directory string
+			Files     []struct{ ID, Filename, State string }
+		}
+	}
+	fetcher.call("GET", "/api/v0/transfers/downloads/sharer", nil, &transfer)
+	if len(transfer.Directories) != 1 || transfer.Directories[0].Directory != dir || len(transfer.Directories[0].Files) != 3 {
+		t.Fatalf("transfers %+v", transfer)
+	}
+	for _, tf := range transfer.Directories[0].Files {
+		eventually(t, tf.Filename, 20*time.Second, func() bool {
+			var st struct{ State string }
+			fetcher.call("GET", "/api/v0/transfers/downloads/sharer/"+tf.ID, nil, &st)
+			return st.State == "Completed, Succeeded"
+		})
+	}
+	// Where soularr looks: downloads/<last folder>/<file name>.
+	for name, want := range originals {
+		got, _ := os.ReadFile(filepath.Join(fetcher.dir, "downloads", "Testalbum", name))
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s not downloaded intact", name)
+		}
+	}
+	if code := fetcher.call("DELETE", "/api/v0/transfers/downloads/all/completed", nil, nil); code != 204 {
+		t.Errorf("clear completed: %d", code)
+	}
+	var all []any
+	fetcher.call("GET", "/api/v0/transfers/downloads", nil, &all)
+	if len(all) != 0 {
+		t.Errorf("downloads after clearing %v", all)
+	}
+	if code := fetcher.call("DELETE", "/api/v0/searches/"+id, nil, nil); code != 204 {
+		t.Errorf("delete search: %d", code)
+	}
+}
+
+func compatVersionForTest() string { return "0.24.0" }

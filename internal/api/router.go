@@ -41,6 +41,9 @@ type Config struct {
 	SessionKey []byte
 	// APIKeys are accepted besides the keys created in the UI.
 	APIKeys []string
+	// DownloadDir and IncompleteDir are reported to slskd clients.
+	DownloadDir   string
+	IncompleteDir string
 	// UI is the built web app. Without an index.html a placeholder page
 	// is served.
 	UI     fs.FS
@@ -73,6 +76,7 @@ type API struct {
 	wishlist  *wishlist.Manager
 	bus       *events.Bus
 	keys      *keyring
+	v0        v0Searches
 	limiter   *loginLimiter
 	now       func() time.Time
 }
@@ -96,6 +100,7 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 		bus:       d.Bus,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
+		v0:        v0Searches{byID: map[string]*v0Search{}},
 	}
 	var err error
 	if a.keys, err = newKeyring(d.DB, cfg.APIKeys); err != nil {
@@ -151,6 +156,8 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 
 	mux.HandleFunc("GET /api/v1/hooks", a.auth(a.listHooks))
 	mux.HandleFunc("POST /api/v1/hooks/test", a.auth(a.testHooks))
+
+	a.routesV0(mux)
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")

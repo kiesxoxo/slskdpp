@@ -182,12 +182,14 @@ func (a *App) build() error {
 		return fmt.Errorf("session key: %w", err)
 	}
 	a.handler, err = api.New(api.Config{
-		Username:   cfg.Web.Username,
-		Password:   password,
-		SessionKey: key,
-		APIKeys:    cfg.Web.APIKeys,
-		UI:         web.Dist(),
-		Logger:     log,
+		Username:      cfg.Web.Username,
+		Password:      password,
+		SessionKey:    key,
+		APIKeys:       cfg.Web.APIKeys,
+		DownloadDir:   cfg.Directories.Downloads,
+		IncompleteDir: cfg.Directories.Incomplete,
+		UI:            web.Dist(),
+		Logger:        log,
 	}, api.Deps{
 		Net: c, Searches: a.searches, Downloads: a.downloads, Uploads: a.uploads, Shares: a.shares,
 		Hooks: a.hooks, Wishlist: a.wishlist, Bus: a.bus, DB: a.db,

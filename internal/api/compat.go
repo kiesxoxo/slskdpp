@@ -1,0 +1,651 @@
+package api
+
+// An slskd-compatible subset of /api/v0, enough for tools written for
+// slskd (soularr, the slskd-api Python client, Lidarr plugins) to search,
+// browse and download through slskdpp. Field names, ID formats and state
+// strings follow slskd's.
+
+import (
+	"cmp"
+	"context"
+	"crypto/rand"
+	"fmt"
+	"net/http"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/kiesxoxo/slskdpp/internal/protocol"
+	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/transfers"
+)
+
+// compatVersion is the slskd version we answer as. Clients check it to
+// pick response formats (soularr expects directory listings as a list
+// after 0.22.2).
+const compatVersion = "0.24.0"
+
+func (a *API) routesV0(mux *http.ServeMux) {
+	h := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, a.auth(fn)) }
+	h("GET /api/v0/application", a.v0Application)
+	h("GET /api/v0/application/version", a.v0Version)
+	h("GET /api/v0/options", a.v0Options)
+
+	h("GET /api/v0/searches", a.v0ListSearches)
+	h("POST /api/v0/searches", a.v0StartSearch)
+	h("GET /api/v0/searches/{id}", a.v0GetSearch)
+	h("PUT /api/v0/searches/{id}", a.v0StopSearch)
+	h("DELETE /api/v0/searches/{id}", a.v0DeleteSearch)
+	h("GET /api/v0/searches/{id}/responses", a.v0SearchResponses)
+
+	h("GET /api/v0/transfers/downloads", a.v0Downloads)
+	h("DELETE /api/v0/transfers/downloads/all/completed", a.v0ClearDownloads)
+	h("GET /api/v0/transfers/downloads/{username}", a.v0UserDownloads)
+	h("POST /api/v0/transfers/downloads/{username}", a.v0Enqueue)
+	h("GET /api/v0/transfers/downloads/{username}/{id}", a.v0Download)
+	h("DELETE /api/v0/transfers/downloads/{username}/{id}", a.v0CancelDownload)
+
+	h("GET /api/v0/users/{username}/browse", a.v0Browse)
+	h("POST /api/v0/users/{username}/directory", a.v0Directory)
+}
+
+// v0JSON writes v as slskd does: plain JSON, no envelope.
+func v0JSON(w http.ResponseWriter, r *http.Request, status int, v any) { writeJSON(w, r, status, v) }
+
+func (a *API) v0Version(w http.ResponseWriter, r *http.Request) {
+	v0JSON(w, r, http.StatusOK, compatVersion)
+}
+
+func (a *API) v0Application(w http.ResponseWriter, r *http.Request) {
+	connected := a.net.LoggedIn()
+	v0JSON(w, r, http.StatusOK, map[string]any{
+		"version": map[string]any{"full": compatVersion, "current": compatVersion, "isUpdateAvailable": false},
+		"server": map[string]any{
+			"username":    a.net.Username(),
+			"isConnected": connected,
+			"isLoggedIn":  connected,
+			"state":       map[bool]string{true: "Connected, LoggedIn", false: "Disconnected"}[connected],
+		},
+	})
+}
+
+func (a *API) v0Options(w http.ResponseWriter, r *http.Request) {
+	v0JSON(w, r, http.StatusOK, map[string]any{
+		"directories": map[string]string{"downloads": a.cfg.DownloadDir, "incomplete": a.cfg.IncompleteDir},
+	})
+}
+
+// newUUID returns a random version 4 UUID.
+func newUUID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// isUUID reports whether s looks like a UUID.
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// Searches.
+
+// v0Search is an slskd search: one of ours plus the options slskd applies
+// to its responses.
+type v0Search struct {
+	id      string
+	search  uint32
+	timeout time.Duration
+	started time.Time
+	stopped bool
+
+	filter        bool
+	maxQueue      int
+	minSpeed      int
+	minFiles      int
+	responseLimit int
+	fileLimit     int
+}
+
+type v0Searches struct {
+	mu   sync.Mutex
+	byID map[string]*v0Search
+}
+
+func (a *API) v0Lookup(w http.ResponseWriter, r *http.Request) (*v0Search, *search.Search, bool) {
+	a.v0.mu.Lock()
+	vs := a.v0.byID[strings.ToLower(r.PathValue("id"))]
+	a.v0.mu.Unlock()
+	if vs != nil {
+		if s, ok := a.searches.Get(vs.search); ok {
+			return vs, s, true
+		}
+		a.v0.mu.Lock()
+		delete(a.v0.byID, vs.id)
+		a.v0.mu.Unlock()
+	}
+	writeError(w, http.StatusNotFound, "no such search")
+	return nil, nil, false
+}
+
+func (a *API) v0StartSearch(w http.ResponseWriter, r *http.Request) {
+	req := struct {
+		ID                       string `json:"id"`
+		SearchText               string `json:"searchText"`
+		SearchTimeout            int    `json:"searchTimeout"`
+		FilterResponses          *bool  `json:"filterResponses"`
+		MaximumPeerQueueLength   int    `json:"maximumPeerQueueLength"`
+		MinimumPeerUploadSpeed   int    `json:"minimumPeerUploadSpeed"`
+		MinimumResponseFileCount int    `json:"minimumResponseFileCount"`
+		ResponseLimit            int    `json:"responseLimit"`
+		FileLimit                int    `json:"fileLimit"`
+	}{SearchTimeout: 15000, MaximumPeerQueueLength: 1_000_000, MinimumResponseFileCount: 1, ResponseLimit: 100, FileLimit: 10_000}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.SearchText) == "" {
+		writeError(w, http.StatusBadRequest, "searchText is required")
+		return
+	}
+	id := strings.ToLower(req.ID)
+	if !isUUID(id) {
+		id = newUUID()
+	}
+	a.v0.mu.Lock()
+	_, taken := a.v0.byID[id]
+	a.v0.mu.Unlock()
+	if taken {
+		writeError(w, http.StatusConflict, "a search with this id exists")
+		return
+	}
+	if !a.net.LoggedIn() {
+		writeError(w, http.StatusServiceUnavailable, "not connected to the Soulseek server")
+		return
+	}
+	s, err := a.searches.Start(req.SearchText)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	vs := &v0Search{
+		id: id, search: s.ID, started: time.Now(),
+		timeout:  time.Duration(min(max(req.SearchTimeout, 1000), 600_000)) * time.Millisecond,
+		filter:   req.FilterResponses == nil || *req.FilterResponses,
+		maxQueue: req.MaximumPeerQueueLength, minSpeed: req.MinimumPeerUploadSpeed,
+		minFiles: req.MinimumResponseFileCount, responseLimit: req.ResponseLimit, fileLimit: req.FileLimit,
+	}
+	a.v0.mu.Lock()
+	a.v0.byID[id] = vs
+	a.v0.mu.Unlock()
+	v0JSON(w, r, http.StatusOK, a.v0State(vs, s, false))
+}
+
+func (vs *v0Search) state() string {
+	switch {
+	case vs.stopped:
+		return "Completed, Cancelled"
+	case time.Since(vs.started) < vs.timeout:
+		return "InProgress"
+	}
+	return "Completed, TimedOut"
+}
+
+func (a *API) v0State(vs *v0Search, s *search.Search, withResponses bool) map[string]any {
+	responses := a.v0Responses(vs, s)
+	files := 0
+	for _, resp := range responses {
+		files += resp["fileCount"].(int)
+	}
+	state := vs.state()
+	out := map[string]any{
+		"id":              vs.id,
+		"searchText":      s.Query,
+		"token":           s.ID,
+		"state":           state,
+		"isComplete":      state != "InProgress",
+		"startedAt":       vs.started.UTC().Format(time.RFC3339Nano),
+		"responseCount":   len(responses),
+		"fileCount":       files,
+		"lockedFileCount": 0,
+		"responses":       []any{},
+	}
+	if state != "InProgress" {
+		out["endedAt"] = vs.started.Add(vs.timeout).UTC().Format(time.RFC3339Nano)
+	}
+	if withResponses {
+		out["responses"] = responses
+	}
+	return out
+}
+
+// v0Responses regroups our folder hits into slskd's per-user responses,
+// applying the search's response filters.
+func (a *API) v0Responses(vs *v0Search, s *search.Search) []map[string]any {
+	byUser := map[string][]search.FolderHit{}
+	for _, h := range s.Hits(search.Filter{}) {
+		byUser[h.User] = append(byUser[h.User], h)
+	}
+	var users []string
+	for u := range byUser {
+		users = append(users, u)
+	}
+	// Best first, as the hits were ranked.
+	slices.SortFunc(users, func(x, y string) int {
+		return cmp.Or(cmp.Compare(byUser[y][0].Score, byUser[x][0].Score), cmp.Compare(x, y))
+	})
+	out := []map[string]any{}
+	total := 0
+	for _, u := range users {
+		hits := byUser[u]
+		first := hits[0]
+		var files []map[string]any
+		for _, h := range hits {
+			for _, f := range h.Files {
+				files = append(files, v0SearchFile(f))
+			}
+		}
+		if vs.filter && (int(first.QueueLength) > vs.maxQueue || int(first.UploadSpeed) < vs.minSpeed || len(files) < vs.minFiles) {
+			continue
+		}
+		if len(out) >= vs.responseLimit || total+len(files) > vs.fileLimit {
+			break
+		}
+		total += len(files)
+		out = append(out, map[string]any{
+			"username":          u,
+			"token":             s.ID,
+			"fileCount":         len(files),
+			"files":             files,
+			"lockedFileCount":   0,
+			"lockedFiles":       []any{},
+			"hasFreeUploadSlot": first.SlotFree,
+			"queueLength":       first.QueueLength,
+			"uploadSpeed":       first.UploadSpeed,
+		})
+	}
+	return out
+}
+
+func v0SearchFile(f search.File) map[string]any {
+	m := map[string]any{
+		"filename":  f.Path,
+		"size":      f.Size,
+		"code":      1,
+		"isLocked":  false,
+		"extension": f.Ext,
+	}
+	if f.BitDepth > 0 {
+		m["bitDepth"] = f.BitDepth
+	} else if f.BitRate > 0 {
+		m["bitRate"] = f.BitRate
+		m["isVariableBitRate"] = f.VBR
+	}
+	if f.Duration > 0 {
+		m["length"] = f.Duration
+	}
+	if f.SampleRate > 0 {
+		m["sampleRate"] = f.SampleRate
+	}
+	return m
+}
+
+func (a *API) v0ListSearches(w http.ResponseWriter, r *http.Request) {
+	a.v0.mu.Lock()
+	all := make([]*v0Search, 0, len(a.v0.byID))
+	for _, vs := range a.v0.byID {
+		all = append(all, vs)
+	}
+	a.v0.mu.Unlock()
+	slices.SortFunc(all, func(x, y *v0Search) int { return x.started.Compare(y.started) })
+	out := []map[string]any{}
+	for _, vs := range all {
+		if s, ok := a.searches.Get(vs.search); ok {
+			out = append(out, a.v0State(vs, s, false))
+		}
+	}
+	v0JSON(w, r, http.StatusOK, out)
+}
+
+func (a *API) v0GetSearch(w http.ResponseWriter, r *http.Request) {
+	if vs, s, ok := a.v0Lookup(w, r); ok {
+		with, _ := strconv.ParseBool(r.URL.Query().Get("includeResponses"))
+		v0JSON(w, r, http.StatusOK, a.v0State(vs, s, with))
+	}
+}
+
+func (a *API) v0SearchResponses(w http.ResponseWriter, r *http.Request) {
+	if vs, s, ok := a.v0Lookup(w, r); ok {
+		v0JSON(w, r, http.StatusOK, a.v0Responses(vs, s))
+	}
+}
+
+func (a *API) v0StopSearch(w http.ResponseWriter, r *http.Request) {
+	if vs, s, ok := a.v0Lookup(w, r); ok {
+		a.v0.mu.Lock()
+		vs.stopped = true
+		a.v0.mu.Unlock()
+		s.Stop()
+		w.WriteHeader(http.StatusOK)
+	}
+}
+
+func (a *API) v0DeleteSearch(w http.ResponseWriter, r *http.Request) {
+	if vs, s, ok := a.v0Lookup(w, r); ok {
+		a.searches.Remove(s.ID)
+		a.v0.mu.Lock()
+		delete(a.v0.byID, vs.id)
+		a.v0.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// Transfers.
+
+// v0TransferID shows a download ID in slskd's GUID format.
+func v0TransferID(id int64) string { return fmt.Sprintf("00000000-0000-4000-8000-%012x", id) }
+
+func v0ParseTransferID(s string) (int64, bool) {
+	if !isUUID(s) || !strings.HasPrefix(s, "00000000-0000-4000-8000-") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(s[24:], 16, 64)
+	return id, err == nil
+}
+
+var v0States = map[transfers.State]string{
+	transfers.StateQueued:       "Queued, Locally",
+	transfers.StateRequested:    "Requested",
+	transfers.StateRemoteQueued: "Queued, Remotely",
+	transfers.StateInitializing: "Initializing",
+	transfers.StateTransferring: "InProgress",
+	transfers.StateCompleted:    "Completed, Succeeded",
+	transfers.StateFailed:       "Completed, Errored",
+	transfers.StateCancelled:    "Completed, Cancelled",
+}
+
+func v0Time(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func v0File(v transfers.View) map[string]any {
+	state := v0States[v.State]
+	if v.State == transfers.StateFailed && strings.HasPrefix(v.Error, "denied") {
+		state = "Completed, Rejected"
+	}
+	pct := 0.0
+	if v.Size > 0 {
+		pct = float64(v.Bytes) / float64(v.Size) * 100
+	}
+	m := map[string]any{
+		"id":               v0TransferID(v.ID),
+		"username":         v.Username,
+		"direction":        "Download",
+		"filename":         v.Filename,
+		"size":             v.Size,
+		"startOffset":      0,
+		"state":            state,
+		"requestedAt":      v0Time(v.Created),
+		"enqueuedAt":       v0Time(v.Created),
+		"endedAt":          v0Time(v.Completed),
+		"bytesTransferred": v.Bytes,
+		"averageSpeed":     float64(v.Speed),
+		"bytesRemaining":   v.Size - min(v.Bytes, v.Size),
+		"percentComplete":  pct,
+	}
+	if v.QueuePlace > 0 {
+		m["placeInQueue"] = v.QueuePlace
+	}
+	if v.Error != "" {
+		m["exception"] = v.Error
+	}
+	return m
+}
+
+// v0Group groups downloads into slskd's per-user transfers, each with
+// its remote directories.
+func v0Group(views []transfers.View) []map[string]any {
+	type dirKey struct{ user, dir string }
+	dirs := map[dirKey][]map[string]any{}
+	var order []dirKey
+	for _, v := range views {
+		k := dirKey{v.Username, remoteDir(v.Filename)}
+		if _, ok := dirs[k]; !ok {
+			order = append(order, k)
+		}
+		dirs[k] = append(dirs[k], v0File(v))
+	}
+	var users []string
+	byUser := map[string][]map[string]any{}
+	for _, k := range order {
+		if _, ok := byUser[k.user]; !ok {
+			users = append(users, k.user)
+		}
+		byUser[k.user] = append(byUser[k.user], map[string]any{
+			"directory": k.dir, "fileCount": len(dirs[k]), "files": dirs[k],
+		})
+	}
+	out := []map[string]any{}
+	for _, u := range users {
+		out = append(out, map[string]any{"username": u, "directories": byUser[u]})
+	}
+	return out
+}
+
+func remoteDir(p string) string {
+	if i := strings.LastIndexAny(p, `\/`); i >= 0 {
+		return p[:i]
+	}
+	return ""
+}
+
+func (a *API) v0Downloads(w http.ResponseWriter, r *http.Request) {
+	v0JSON(w, r, http.StatusOK, v0Group(a.downloads.List()))
+}
+
+func (a *API) v0UserDownloads(w http.ResponseWriter, r *http.Request) {
+	user := r.PathValue("username")
+	var mine []transfers.View
+	for _, v := range a.downloads.List() {
+		if v.Username == user {
+			mine = append(mine, v)
+		}
+	}
+	groups := v0Group(mine)
+	if len(groups) == 0 {
+		v0JSON(w, r, http.StatusOK, map[string]any{"username": user, "directories": []any{}})
+		return
+	}
+	v0JSON(w, r, http.StatusOK, groups[0])
+}
+
+func (a *API) v0Enqueue(w http.ResponseWriter, r *http.Request) {
+	var files []transfers.FileRequest
+	var raw []struct {
+		Filename string `json:"filename"`
+		Size     uint64 `json:"size"`
+	}
+	if !readJSON(w, r, &raw) {
+		return
+	}
+	for _, f := range raw {
+		if f.Filename != "" {
+			files = append(files, transfers.FileRequest{Path: f.Filename, Size: f.Size})
+		}
+	}
+	if len(files) == 0 {
+		writeError(w, http.StatusBadRequest, "no files to download")
+		return
+	}
+	views, err := a.downloads.Enqueue(r.PathValue("username"), files, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	enqueued := make([]map[string]any, len(views))
+	for i, v := range views {
+		enqueued[i] = v0File(v)
+	}
+	v0JSON(w, r, http.StatusCreated, map[string]any{"enqueued": enqueued, "failed": []any{}})
+}
+
+// v0Find looks a download up by ID alone: after a source switch its user
+// is no longer the one the client queued it from.
+func (a *API) v0Find(w http.ResponseWriter, r *http.Request) (transfers.View, bool) {
+	if id, ok := v0ParseTransferID(strings.ToLower(r.PathValue("id"))); ok {
+		if v, ok := a.downloads.Get(id); ok {
+			return v, true
+		}
+	}
+	writeError(w, http.StatusNotFound, "no such transfer")
+	return transfers.View{}, false
+}
+
+func (a *API) v0Download(w http.ResponseWriter, r *http.Request) {
+	if v, ok := a.v0Find(w, r); ok {
+		v0JSON(w, r, http.StatusOK, v0File(v))
+	}
+}
+
+func (a *API) v0CancelDownload(w http.ResponseWriter, r *http.Request) {
+	v, ok := a.v0Find(w, r)
+	if !ok {
+		return
+	}
+	if remove, _ := strconv.ParseBool(r.URL.Query().Get("remove")); remove {
+		a.downloads.Remove(v.ID)
+	} else if !v.State.Done() {
+		a.downloads.Cancel(v.ID)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) v0ClearDownloads(w http.ResponseWriter, r *http.Request) {
+	if _, err := a.downloads.Clear(transfers.StateCompleted, transfers.StateFailed, transfers.StateCancelled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// Users.
+
+var v0AttrNames = map[uint32]string{
+	protocol.AttrBitRate:    "BitRate",
+	protocol.AttrDuration:   "Length",
+	protocol.AttrVBR:        "VariableBitRate",
+	protocol.AttrSampleRate: "SampleRate",
+	protocol.AttrBitDepth:   "BitDepth",
+}
+
+var v0AttrKeys = map[uint32]string{
+	protocol.AttrBitRate:    "bitRate",
+	protocol.AttrDuration:   "length",
+	protocol.AttrSampleRate: "sampleRate",
+	protocol.AttrBitDepth:   "bitDepth",
+}
+
+// v0Dir lists a directory as slskd does: bare file names, attributes both
+// as a list and as keys.
+func v0Dir(d protocol.Directory) map[string]any {
+	files := make([]map[string]any, 0, len(d.Files))
+	for _, f := range d.Files {
+		name := f.Name
+		if i := strings.LastIndexAny(name, `\/`); i >= 0 {
+			name = name[i+1:]
+		}
+		attrs := make([]map[string]any, 0, len(f.Attrs))
+		file := map[string]any{"filename": name, "size": f.Size, "code": 1, "extension": search.ConvertFile(f).Ext}
+		for _, at := range f.Attrs {
+			if n, ok := v0AttrNames[at.Code]; ok {
+				attrs = append(attrs, map[string]any{"type": n, "value": at.Value})
+			}
+			if k, ok := v0AttrKeys[at.Code]; ok {
+				file[k] = at.Value
+			}
+			if at.Code == protocol.AttrVBR {
+				file["isVariableBitRate"] = at.Value != 0
+			}
+		}
+		file["attributeCount"] = len(attrs)
+		file["attributes"] = attrs
+		files = append(files, file)
+	}
+	return map[string]any{"name": d.Name, "fileCount": len(files), "files": files}
+}
+
+func v0Dirs(dirs []protocol.Directory) []map[string]any {
+	out := make([]map[string]any, len(dirs))
+	for i, d := range dirs {
+		out[i] = v0Dir(d)
+	}
+	return out
+}
+
+func (a *API) v0Browse(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), peerTimeout)
+	defer cancel()
+	list, err := a.net.Browse(ctx, r.PathValue("username"))
+	if err != nil {
+		peerError(w, err)
+		return
+	}
+	v0JSON(w, r, http.StatusOK, map[string]any{
+		"directoryCount":       len(list.Dirs),
+		"directories":          v0Dirs(list.Dirs),
+		"lockedDirectoryCount": len(list.PrivateDirs),
+		"lockedDirectories":    v0Dirs(list.PrivateDirs),
+	})
+}
+
+// v0Directory lists one remote directory. slskd returns a list holding
+// just that directory, its subdirectories not included.
+func (a *API) v0Directory(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Directory string `json:"directory"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Directory == "" {
+		writeError(w, http.StatusBadRequest, "directory is required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), peerTimeout)
+	defer cancel()
+	resp, err := a.net.FolderContents(ctx, r.PathValue("username"), req.Directory)
+	if err != nil {
+		peerError(w, err)
+		return
+	}
+	out := []map[string]any{}
+	for _, d := range resp.Dirs {
+		if d.Name == req.Directory {
+			out = append(out, v0Dir(d))
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, map[string]any{"name": req.Directory, "fileCount": 0, "files": []any{}})
+	}
+	v0JSON(w, r, http.StatusOK, out)
+}
