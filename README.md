@@ -1,6 +1,12 @@
-# slskdpp
+<p align="center">
+  <img src="web/public/favicon.svg" alt="" width="96" height="96">
+</p>
 
-[![CI](https://github.com/kiesxoxo/slskdpp/actions/workflows/ci.yml/badge.svg)](https://github.com/kiesxoxo/slskdpp/actions/workflows/ci.yml)
+<h1 align="center">slskdpp</h1>
+
+<p align="center">
+  <a href="https://github.com/kiesxoxo/slskdpp/actions/workflows/ci.yml"><img src="https://github.com/kiesxoxo/slskdpp/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
 
 A small, headless [Soulseek](https://www.slsknet.org/) client with a web UI. It
 is a single static binary of about 12 MB with the UI built in, and it idles at
@@ -27,6 +33,11 @@ things:
 > full instances talking to each other through a test server, and it has been
 > exercised against a simulated network. It has not had much time on the real
 > Soulseek network yet, so expect rough edges and please report them.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/search-dark.png">
+  <img src="docs/screenshots/search-light.png" alt="Search results grouped into albums, with one album open">
+</picture>
 
 ## Contents
 
@@ -152,10 +163,29 @@ files are never shared. Changes on disk are picked up as they happen.
   use.
 - **Wishlist.** Saved searches that keep running; see [below](#wishlist).
 - **Shares.** Folders you share, their totals, and rescans.
-- **Settings** (the gear). API keys, hooks with a test button, and account
+- **Settings.** API keys, hooks with a test button, and account
   status.
 
-It works on phones too, and follows your system's light or dark theme.
+It works on phones too. The theme follows your system, or you can pick light or
+dark in the sidebar (under **More** on phones).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/phone-dark.png">
+  <img src="docs/screenshots/phone-light.png" alt="Search, an album, downloads and the More menu on a phone">
+</picture>
+
+<table>
+  <tr>
+    <td><picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/downloads-dark.png">
+      <img src="docs/screenshots/downloads-light.png" alt="Downloads grouped by folder, with progress and queue places">
+    </picture></td>
+    <td><picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/browse-dark.png">
+      <img src="docs/screenshots/browse-light.png" alt="Browsing a user's share as a folder tree">
+    </picture></td>
+  </tr>
+</table>
 
 ## Automation
 
