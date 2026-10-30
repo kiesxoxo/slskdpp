@@ -2,10 +2,17 @@ package api
 
 import (
 	"io/fs"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
 )
+
+func init() {
+	// Not in every system's MIME table; browsers want it for the web
+	// app manifest.
+	mime.AddExtensionType(".webmanifest", "application/manifest+json")
+}
 
 const uiMissing = `<!doctype html><meta charset="utf-8"><title>slskdpp</title>
 <p>The web UI is not built into this binary. Run <code>make ui build</code>.

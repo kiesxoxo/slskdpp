@@ -3,6 +3,9 @@
   import { api, errorText, type ApiKey, type HookResult } from '../lib/api';
   import { ago } from '../lib/format';
   import { session } from '../lib/session.svelte';
+  import Icon from '../lib/Icon.svelte';
+  import PageHead from '../lib/PageHead.svelte';
+  import ThemeSwitch from '../lib/ThemeSwitch.svelte';
 
   let keys = $state<ApiKey[]>([]);
   let hooks = $state<{ on_download: string; on_folder: string; webhook: string } | null>(null);
@@ -71,59 +74,95 @@
   let anyHook = $derived(!!hooks && !!(hooks.on_download || hooks.on_folder || hooks.webhook));
 </script>
 
-<div class="page">
-  <div class="content">
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
+<div class="page-scroll">
+  <div class="page-body narrow">
+    <PageHead title="Settings" />
+    {#if error}<p class="banner" role="alert">{error}</p>{/if}
 
-    <section>
-      <h2>Account</h2>
-      <p>
-        Soulseek user <strong>{session.soulseekUser || '…'}</strong> ·
-        <span class="dot" class:good={session.connected} class:bad={!session.connected}></span>
-        {session.connected ? 'connected' : 'not connected'} · web login <strong>{session.user}</strong>
-      </p>
+    <section class="card block">
+      <div class="block-head">
+        <span class="block-icon"><Icon name="user" /></span>
+        <div>
+          <h2>Account</h2>
+          <p class="muted small">Your Soulseek identity and this web login</p>
+        </div>
+      </div>
+      <dl>
+        <dt>Soulseek user</dt>
+        <dd><strong>{session.soulseekUser || '…'}</strong></dd>
+        <dt>Server</dt>
+        <dd>
+          <span class="badge {session.connected ? 'good' : 'bad'}">
+            <span class="dot" class:good={session.connected} class:bad={!session.connected}></span>
+            {session.connected ? 'Connected' : 'Not connected'}
+          </span>
+        </dd>
+        <dt>Web login</dt>
+        <dd>{session.user}</dd>
+      </dl>
     </section>
 
-    <section>
-      <h2>API keys</h2>
-      <p class="muted small">
-        For scripts and tools like Lidarr: send the key in an <span class="mono">X-API-Key</span> header (or
-        <span class="mono">Authorization: Bearer</span>). Keys can use the whole API except managing keys.
-      </p>
+    <section class="card block">
+      <div class="block-head">
+        <span class="block-icon"><Icon name="moon" /></span>
+        <div>
+          <h2>Appearance</h2>
+          <p class="muted small">Remembered in this browser</p>
+        </div>
+      </div>
+      <ThemeSwitch labels />
+    </section>
+
+    <section class="card block">
+      <div class="block-head">
+        <span class="block-icon"><Icon name="key" /></span>
+        <div>
+          <h2>API keys</h2>
+          <p class="muted small">
+            For scripts and tools like Lidarr or soularr: send a key in an <span class="mono">X-API-Key</span> header. Keys can use
+            the whole API except managing keys.
+          </p>
+        </div>
+      </div>
       {#if created}
         <div class="created" role="status">
-          <p><strong>Key “{created.name}” created.</strong> Copy it now; it will not be shown again.</p>
+          <p><strong>“{created.name}” created.</strong> Copy it now; it will not be shown again.</p>
           <div class="row">
             <input class="mono" readonly value={created.key} aria-label="New API key" onfocus={(e) => (e.target as HTMLInputElement).select()} />
-            <button onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-            <button class="ghost" onclick={() => (created = null)}>Done</button>
+            <button onclick={copy}><Icon name={copied ? 'check' : 'copy'} size={17} /> {copied ? 'Copied' : 'Copy'}</button>
           </div>
+          <button class="ghost small done" onclick={() => (created = null)}>Done</button>
         </div>
       {/if}
-      <ul class="list">
-        {#each keys as k (k.id)}
-          <li>
-            <div class="info">
-              <span><strong>{k.name}</strong> <span class="mono muted">{k.prefix}…</span></span>
-              <span class="muted small">
-                {#if k.from_config}set in the config file{:else}created {ago(k.created)} · last used {ago(k.last_used)}{/if}
-              </span>
-            </div>
-            {#if !k.from_config}<button onclick={() => revoke(k)}>Revoke</button>{/if}
-          </li>
-        {:else}
-          <li class="muted">No API keys yet.</li>
-        {/each}
-      </ul>
+      {#if keys.length}
+        <ul class="rows list">
+          {#each keys as k (k.id)}
+            <li>
+              <div class="info">
+                <span><strong>{k.name}</strong> <span class="mono muted">{k.prefix}…</span></span>
+                <span class="muted small">
+                  {#if k.from_config}Set in the config file{:else}Created {ago(k.created)} · last used {ago(k.last_used)}{/if}
+                </span>
+              </div>
+              {#if !k.from_config}<button class="small" onclick={() => revoke(k)}>Revoke</button>{/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
       <form class="row" onsubmit={create}>
         <input placeholder="What the key is for, e.g. lidarr" bind:value={name} aria-label="Key name" />
-        <button class="primary" disabled={!name.trim()}>Create key</button>
+        <button class="primary" disabled={!name.trim()}><Icon name="plus" size={18} /> Create key</button>
       </form>
     </section>
 
-    <section>
-      <h2>Hooks</h2>
-      <p class="muted small">Run when downloads finish. Set them in the config file under <span class="mono">hooks:</span>.</p>
+    <section class="card block">
+      <div class="block-head">
+        <span class="block-icon"><Icon name="hook" /></span>
+        <div>
+          <h2>Hooks</h2>
+          <p class="muted small">Run when downloads finish. Set them in the config file under <span class="mono">hooks:</span>.</p>
+        </div>
+      </div>
       {#if hooks}
         <dl>
           <dt>Each file</dt>
@@ -138,11 +177,14 @@
         <button onclick={test} disabled={testing || !anyHook}>{testing ? 'Running…' : 'Send a test event'}</button>
       </div>
       {#if results}
-        <ul class="list">
+        <ul class="rows list">
           {#each results as r (r.hook)}
             <li>
               <div class="info">
-                <span><span class="dot" class:good={r.ok} class:bad={!r.ok}></span> <strong>{r.hook}</strong> {r.ok ? 'ran fine' : 'failed'}</span>
+                <span class="result">
+                  <span class="badge {r.ok ? 'good' : 'bad'}">{r.ok ? 'OK' : 'Failed'}</span>
+                  <strong>{r.hook}</strong>
+                </span>
                 {#if r.error}<span class="error small">{r.error}</span>{/if}
                 {#if r.output}<pre class="mono small">{r.output}</pre>{/if}
               </div>
@@ -155,38 +197,37 @@
 </div>
 
 <style>
-  .page {
-    height: 100%;
-    overflow-y: auto;
+  .narrow {
+    max-width: 760px;
   }
-  .content {
-    padding: 16px;
-    max-width: 820px;
+  .block {
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 14px;
+    padding: 18px;
   }
-  section {
+  .block-head {
     display: flex;
-    flex-direction: column;
-    gap: 10px;
+    gap: 14px;
+    align-items: flex-start;
   }
-  h2 {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 0;
+  .block-icon {
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    flex: none;
+    border-radius: 11px;
+    background: var(--accent-soft);
+    color: var(--accent-soft-text);
   }
-  p {
-    margin: 0;
-  }
-  .small {
-    font-size: 12.5px;
+  .block-head h2 {
+    font-size: 16px;
+    margin-bottom: 2px;
   }
   .row {
     display: flex;
-    gap: 6px;
+    gap: 8px;
   }
   .row input {
     flex: 1;
@@ -194,28 +235,24 @@
   .created {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 12px;
+    gap: 10px;
+    padding: 14px;
     border: 1px solid var(--accent);
     background: var(--accent-soft);
-    border-radius: 10px;
+    border-radius: var(--radius);
+  }
+  .done {
+    align-self: flex-end;
   }
   .list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius);
   }
   .list > li {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 10px 14px;
-  }
-  .list > li + li {
-    border-top: 1px solid var(--border);
+    padding: 10px 12px;
   }
   .info {
     display: flex;
@@ -223,6 +260,11 @@
     gap: 2px;
     flex: 1;
     min-width: 0;
+  }
+  .result {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   pre {
     margin: 4px 0 0;
@@ -233,8 +275,9 @@
   dl {
     display: grid;
     grid-template-columns: max-content 1fr;
-    gap: 6px 16px;
+    gap: 8px 18px;
     margin: 0;
+    align-items: center;
   }
   dt {
     color: var(--muted);
@@ -242,5 +285,26 @@
   dd {
     margin: 0;
     word-break: break-all;
+  }
+  @media (max-width: 720px) {
+    .block {
+      padding: 16px 14px;
+    }
+    .row {
+      flex-wrap: wrap;
+    }
+    .row input {
+      flex-basis: 100%;
+    }
+    .row button {
+      flex: 1;
+    }
+    dl {
+      grid-template-columns: 1fr;
+      gap: 2px;
+    }
+    dd {
+      margin-bottom: 8px;
+    }
   }
 </style>

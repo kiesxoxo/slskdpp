@@ -8,6 +8,7 @@
   import { session } from '../lib/session.svelte';
   import VirtualList from '../lib/VirtualList.svelte';
   import DownloadButton from '../lib/DownloadButton.svelte';
+  import Icon from '../lib/Icon.svelte';
 
   let { id }: { id: number | null } = $props();
 
@@ -44,6 +45,7 @@
   let freeOnly = $state(false);
   let minFiles = $state(0);
   let excludeText = $state('');
+  let showFilters = $state(false);
 
   let filter: Filter = $derived({
     formats,
@@ -55,6 +57,9 @@
       .map((s) => s.trim())
       .filter(Boolean),
   });
+  let activeFilters = $derived(
+    formats.length + Number(minBitrate > 0) + Number(freeOnly) + Number(minFiles > 0) + Number(filter.exclude.length > 0),
+  );
   let albums = $derived(groupAlbums(rank(hits.filter((h) => matches(h, filter)))));
   let users = $derived(new Set(hits.map((h) => h.user)).size);
   let fileCount = $derived(hits.reduce((n, h) => n + h.file_count, 0));
@@ -144,6 +149,14 @@
     formats = formats.includes(f) ? formats.filter((x) => x !== f) : [...formats, f];
   }
 
+  function clearFilters() {
+    formats = [];
+    minBitrate = 0;
+    freeOnly = false;
+    minFiles = 0;
+    excludeText = '';
+  }
+
   function select(a: Album) {
     selectedHit = hitKey(a.sources[0]);
   }
@@ -160,105 +173,138 @@
   }
 
   function slotLabel(h: Hit): string {
-    return h.slot_free ? 'free slot' : `queue ${h.queue_length}`;
+    return h.slot_free ? 'Free slot' : `Queue ${h.queue_length}`;
+  }
+
+  function fileQuality(f: Hit['files'][number]): string {
+    if (f.bit_depth && f.sample_rate) return `${f.bit_depth}/${f.sample_rate / 1000}k`;
+    return f.bitrate ? `${f.bitrate}k` : '';
+  }
+
+  function keydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && selected) selectedHit = null;
   }
 </script>
 
-<div class="page" class:has-details={selected}>
-  <aside class="recent">
-    <form class="search-form" onsubmit={start}>
-      <input
-        type="search"
-        placeholder="Artist, album, track…"
-        bind:value={query}
-        aria-label="Search query"
-        disabled={!session.connected}
-      />
-      <button class="primary" disabled={starting || !session.connected || !query.trim()}>Search</button>
-    </form>
-    {#if !session.connected}
-      <p class="muted small">Not connected to the Soulseek server.</p>
-    {/if}
-    <h2>Recent</h2>
-    <ul>
-      {#each searches as s (s.id)}
-        <li class:current={s.id === id}>
-          <a href={href(['search', String(s.id)])} class="ellipsis" title={s.query}>{s.query}</a>
-          <span class="muted small">{s.id === id ? hits.length : s.folders}</span>
-          {#if s.id === id ? active : s.active}<span class="dot good pulse" title="Collecting results"></span>{/if}
-          <button class="ghost x" title="Remove search" aria-label="Remove search {s.query}" onclick={() => remove(s)}>×</button>
-        </li>
-      {:else}
-        <li class="muted small">No searches yet.</li>
-      {/each}
-    </ul>
-  </aside>
+<svelte:window onkeydown={keydown} />
 
+<div class="page" class:has-details={selected}>
   <section class="results">
-    {#if error}<p class="error banner" role="alert">{error}</p>{/if}
+    <div class="head">
+      <form class="search-form" onsubmit={start}>
+        <label class="field">
+          <Icon name="search" size={18} />
+          <input
+            type="search"
+            enterkeyhint="search"
+            placeholder={session.connected ? 'Artist, album or track' : 'Not connected to the Soulseek server'}
+            bind:value={query}
+            aria-label="Search query"
+            disabled={!session.connected}
+          />
+        </label>
+        <button class="primary" disabled={starting || !session.connected || !query.trim()}>Search</button>
+      </form>
+      {#if searches.length}
+        <div class="recent" aria-label="Recent searches">
+          {#each searches as s (s.id)}
+            <span class="recent-chip" class:current={s.id === id}>
+              <a href={href(['search', String(s.id)])} title={s.query}>
+                {#if s.id === id ? active : s.active}<span class="dot good pulse"></span>{/if}
+                <span class="ellipsis">{s.query}</span>
+                <span class="n">{s.id === id ? hits.length : s.folders}</span>
+              </a>
+              <button class="x" title="Remove" aria-label="Remove search {s.query}" onclick={() => remove(s)}>
+                <Icon name="close" size={14} stroke={2.2} />
+              </button>
+            </span>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    {#if error}<p class="banner err" role="alert">{error}</p>{/if}
+
     {#if id === null}
-      <div class="hint muted">
-        <p>Search the Soulseek network. Results stream in and are grouped by album, best sources first.</p>
+      <div class="empty">
+        <span class="empty-icon"><Icon name="search" size={26} /></span>
+        <strong>Find music on Soulseek</strong>
+        <p>Results stream in as people answer, grouped into albums with the best sources first.</p>
       </div>
     {:else}
       <div class="toolbar">
         <div class="summary">
-          <span class="wish">
-            {#if wished}
-              <a href={href(['wishlist'])}>On the wishlist</a>
-            {:else}
-              <button onclick={addToWishlist} title="Keep searching for this on a schedule">+ Wishlist</button>
-            {/if}
-          </span>
-          {#if active}<span class="dot good pulse"></span>{/if}
+          {#if active}<span class="dot good pulse" title="Collecting results"></span>{/if}
           <strong>{plural(albums.length, 'album')}</strong>
-          <span class="muted">
-            from {plural(users, 'user')} · {plural(fileCount, 'file')}{active ? ' · searching…' : ''}
+          <span class="muted ellipsis">
+            {plural(users, 'user')} · {plural(fileCount, 'file')}{active ? ' · searching…' : ''}
           </span>
         </div>
-        <div class="filters">
+        <div class="actions">
+          <button class="small filter-toggle" class:on={showFilters} onclick={() => (showFilters = !showFilters)} aria-expanded={showFilters}>
+            <Icon name="filter" size={16} /> Filters
+            {#if activeFilters}<span class="n">{activeFilters}</span>{/if}
+          </button>
+          {#if wished}
+            <a class="small-link" href={href(['wishlist'])}><Icon name="check" size={16} /> On wishlist</a>
+          {:else}
+            <button class="small" onclick={addToWishlist} title="Keep searching for this on a schedule">
+              <Icon name="wishlist" size={16} /> <span class="hide-xs">Wishlist</span>
+            </button>
+          {/if}
+        </div>
+      </div>
+      <div class="filters" class:open={showFilters}>
+        <div class="chips">
           {#each formatChoices as f (f)}
             <button class="chip" class:on={formats.includes(f)} aria-pressed={formats.includes(f)} onclick={() => toggleFormat(f)}>{f}</button>
           {/each}
-          <select bind:value={minBitrate} aria-label="Minimum bitrate">
-            <option value={0}>any bitrate</option>
-            <option value={192}>≥ 192 kbps</option>
-            <option value={256}>≥ 256 kbps</option>
-            <option value={320}>≥ 320 kbps</option>
-          </select>
-          <label class="check"><input type="checkbox" bind:checked={freeOnly} /> free slot</label>
-          <label class="check">
-            min files <input type="number" min="0" class="narrow" bind:value={minFiles} />
-          </label>
-          <input class="exclude" placeholder="exclude users (a, b)" bind:value={excludeText} aria-label="Exclude users" />
         </div>
+        <select bind:value={minBitrate} aria-label="Minimum bitrate">
+          <option value={0}>Any bitrate</option>
+          <option value={192}>≥ 192 kbps</option>
+          <option value={256}>≥ 256 kbps</option>
+          <option value={320}>≥ 320 kbps</option>
+        </select>
+        <label class="check"><input type="checkbox" bind:checked={freeOnly} /> Free slot</label>
+        <label class="check">Min files <input type="number" min="0" inputmode="numeric" class="narrow" bind:value={minFiles} /></label>
+        <input class="exclude" placeholder="Exclude users" bind:value={excludeText} aria-label="Exclude users (comma-separated)" />
+        {#if activeFilters}<button class="ghost small" onclick={clearFilters}>Clear</button>{/if}
       </div>
       <div class="list">
-        <VirtualList items={albums} rowHeight={62}>
+        <VirtualList items={albums} rowHeight={68}>
           {#snippet row(a: Album)}
             {@const best = a.sources[0]}
             <button class="album" class:selected={selected?.key === a.key} onclick={() => select(a)}>
+              <span class="fmt" class:lossless={best.lossless}>{best.formats[0] ?? '?'}</span>
               <span class="main">
                 <span class="name ellipsis">{a.name}</span>
-                <span class="meta muted ellipsis">
-                  {plural(a.file_count, 'file')} · {best.formats.slice(0, 3).join('/')} · {quality(best)} · {size(a.total_size)}
+                <span class="meta ellipsis">
+                  {plural(a.file_count, 'file')} · {quality(best)} · {size(a.total_size)}
                 </span>
               </span>
               <span class="side">
-                <span class="who ellipsis">
-                  <span class="dot" class:good={best.slot_free} class:warn={!best.slot_free}></span>
-                  {best.user}
-                </span>
-                <span class="muted small">
-                  {slotLabel(best)} · {speed(best.upload_speed)}{a.sources.length > 1 ? ` · +${a.sources.length - 1}` : ''}
-                </span>
+                <span class="who ellipsis">{best.user}{#if a.sources.length > 1}<span class="plus">+{a.sources.length - 1}</span>{/if}</span>
+                <span class="slot" class:free={best.slot_free}>{slotLabel(best)}</span>
               </span>
             </button>
           {/snippet}
           {#snippet empty()}
-            <p class="hint muted">
-              {active ? 'Waiting for results…' : hits.length ? 'No results match the filters.' : 'No results.'}
-            </p>
+            <div class="empty">
+              {#if active}
+                <span class="empty-icon pulse"><Icon name="signal" size={26} /></span>
+                <strong>Listening for answers…</strong>
+                <p>Peers answer over the next minute or two.</p>
+              {:else if hits.length}
+                <span class="empty-icon"><Icon name="filter" size={26} /></span>
+                <strong>Nothing matches the filters</strong>
+                <button class="small" onclick={clearFilters}>Clear filters</button>
+              {:else}
+                <span class="empty-icon"><Icon name="search" size={26} /></span>
+                <strong>No results</strong>
+                <p>Try fewer or different words.</p>
+              {/if}
+            </div>
           {/snippet}
         </VirtualList>
       </div>
@@ -268,49 +314,48 @@
   {#if selected && source}
     <section class="details" aria-label="Album details">
       <div class="details-head">
-        <h2 class="ellipsis" title={selected.name}>{selected.name}</h2>
-        <button class="ghost" aria-label="Close details" onclick={() => (selectedHit = null)}>×</button>
-      </div>
-      <p class="muted small">{plural(selected.file_count, 'file')} · {size(selected.total_size)} · {plural(selected.sources.length, 'source')}</p>
-      <ul class="sources">
-        {#each selected.sources as s (hitKey(s))}
-          <li>
-            <button class="source" class:on={s === source} onclick={() => (selectedHit = hitKey(s))}>
-              <span class="who ellipsis">
-                <span class="dot" class:good={s.slot_free} class:warn={!s.slot_free}></span>
-                {s.user}
-              </span>
-              <span class="muted small">{slotLabel(s)} · {speed(s.upload_speed)} · {quality(s)}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-      <div class="folder">
-        <span class="mono ellipsis" title={source.folder}>{source.folder}</span>
-        <a href={href(['browse', source.user], { folder: source.folder })}>Browse {source.user}</a>
-      </div>
-      {#key hitKey(source)}
-        <div class="get">
-          <DownloadButton
-            username={source.user}
-            folder={source.folder}
-            files={source.files.map((f) => ({ path: f.path, size: f.size }))}
-            label="Download folder"
-          />
+        <button class="icon-btn back" aria-label="Back to results" onclick={() => (selectedHit = null)}><Icon name="back" /></button>
+        <div class="title">
+          <h2 class="ellipsis" title={selected.name}>{selected.name}</h2>
+          <p class="muted small">{plural(selected.file_count, 'file')} · {size(selected.total_size)} · {plural(selected.sources.length, 'source')}</p>
         </div>
-      {/key}
-      <div class="files">
+        <button class="icon-btn close" aria-label="Close details" onclick={() => (selectedHit = null)}><Icon name="close" /></button>
+      </div>
+      <div class="details-body">
+        <div class="section-title">Sources</div>
+        <ul class="sources">
+          {#each selected.sources as s (hitKey(s))}
+            <li>
+              <button class="source" class:on={s === source} onclick={() => (selectedHit = hitKey(s))}>
+                <span class="who ellipsis"><Icon name="user" size={16} /> {s.user}</span>
+                <span class="src-meta">
+                  <span class="slot" class:free={s.slot_free}>{slotLabel(s)}</span>
+                  <span class="muted small">{speed(s.upload_speed)} · {quality(s)}</span>
+                </span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+        <div class="folder">
+          <span class="mono ellipsis" title={source.folder}>{source.folder}</span>
+          <a href={href(['browse', source.user], { folder: source.folder })}>Browse user</a>
+        </div>
         <table class="files">
           <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th><th class="act"></th></tr>
+            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num len">Length</th><th class="act"></th></tr>
           </thead>
           <tbody>
             {#each source.files as f (f.path)}
               <tr>
-                <td class="ellipsis" title={f.name}>{f.name}</td>
+                <td class="fcell" title={f.name}>
+                  <span class="ellipsis fname">{f.name}</span>
+                  {#if fileQuality(f) || f.duration}
+                    <span class="fsub">{[fileQuality(f), duration(f.duration)].filter(Boolean).join(' · ')}</span>
+                  {/if}
+                </td>
                 <td class="num">{size(f.size)}</td>
-                <td class="num opt">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
-                <td class="num">{duration(f.duration)}</td>
+                <td class="num opt">{fileQuality(f)}</td>
+                <td class="num len">{duration(f.duration)}</td>
                 <td class="act">
                   <DownloadButton compact username={source.user} files={[{ path: f.path, size: f.size }]} label="Download {f.name}" />
                 </td>
@@ -319,6 +364,16 @@
           </tbody>
         </table>
       </div>
+      {#key hitKey(source)}
+        <div class="details-foot">
+          <DownloadButton
+            username={source.user}
+            folder={source.folder}
+            files={source.files.map((f) => ({ path: f.path, size: f.size }))}
+            label="Download folder"
+          />
+        </div>
+      {/key}
     </section>
   {/if}
 </div>
@@ -326,57 +381,12 @@
 <style>
   .page {
     display: grid;
-    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     height: 100%;
   }
   .page.has-details {
-    grid-template-columns: 260px minmax(0, 1fr) minmax(320px, 38%);
-  }
-  .small {
-    font-size: 12.5px;
-  }
-  .recent {
-    border-right: 1px solid var(--border);
-    background: var(--surface);
-    padding: 12px;
-    overflow-y: auto;
-  }
-  .search-form {
-    display: flex;
-    gap: 6px;
-  }
-  .search-form input {
-    flex: 1;
-  }
-  h2 {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 18px 0 6px;
-  }
-  .recent ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .recent li {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 0 2px 8px;
-    border-radius: var(--radius);
-  }
-  .recent li.current {
-    background: var(--accent-soft);
-  }
-  .recent li a {
-    flex: 1;
-    color: var(--text);
-  }
-  .x {
-    padding: 2px 8px;
-    color: var(--muted);
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 42%);
   }
   .results {
     display: flex;
@@ -384,56 +394,177 @@
     min-width: 0;
     min-height: 0;
   }
-  .banner {
-    margin: 12px 16px 0;
-  }
-  .hint {
-    padding: 24px 16px;
-  }
-  .toolbar {
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
+  .head {
+    padding: 18px 20px 12px;
     display: flex;
     flex-direction: column;
+    gap: 12px;
+  }
+  .search-form {
+    display: flex;
+    gap: 8px;
+  }
+  .field {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    color: var(--faint);
+  }
+  .field :global(.icon) {
+    position: absolute;
+    left: 12px;
+    pointer-events: none;
+  }
+  .field input {
+    width: 100%;
+    padding-left: 38px;
+    min-height: 42px;
+    font-size: 15px;
+    border-radius: 11px;
+    color: var(--text);
+  }
+  .search-form button {
+    min-height: 42px;
+    padding: 0 20px;
+    border-radius: 11px;
+  }
+  .recent {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin: 0 -20px;
+    padding: 0 20px;
+  }
+  .recent::-webkit-scrollbar {
+    display: none;
+  }
+  .recent-chip {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    max-width: 240px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 999px;
+    font-size: 13px;
+  }
+  .recent-chip.current {
+    border-color: transparent;
+    background: var(--accent-soft);
+  }
+  .recent-chip a {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 5px 4px 5px 12px;
+    color: var(--text);
+    font-weight: 500;
+  }
+  .recent-chip.current a {
+    color: var(--accent-soft-text);
+  }
+  .recent-chip a:hover {
+    text-decoration: none;
+  }
+  .n {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .recent-chip .x {
+    min-height: 0;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    margin-right: 2px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--faint);
+  }
+  .recent-chip .x:hover {
+    color: var(--text);
+  }
+  .err {
+    margin: 0 20px 8px;
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 10px;
+    padding: 4px 20px 10px;
   }
   .summary {
     display: flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
   }
-  .wish {
-    order: 9;
-    margin-left: auto;
-    font-size: 13px;
+  .summary strong {
+    white-space: nowrap;
   }
-  .wish button {
-    padding: 3px 10px;
+  .actions {
+    display: flex;
+    gap: 6px;
+    flex: none;
+  }
+  .filter-toggle {
+    display: none;
+  }
+  .filter-toggle .n {
+    min-width: 18px;
+    line-height: 18px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+  .small-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     font-size: 13px;
+    font-weight: 500;
+    color: var(--good);
   }
   .filters {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    gap: 8px;
+    padding: 0 20px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
     gap: 6px;
   }
+  .chips:empty {
+    display: none;
+  }
   .filters select,
-  .filters input {
-    padding: 4px 8px;
+  .filters input:not([type='checkbox']) {
+    min-height: 32px;
+    padding: 4px 10px;
     font-size: 13px;
   }
   .check {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     font-size: 13px;
     color: var(--muted);
   }
   .narrow {
-    width: 56px;
+    width: 64px;
   }
   .exclude {
-    width: 170px;
+    width: 150px;
   }
   .list {
     flex: 1;
@@ -445,128 +576,280 @@
     gap: 12px;
     width: 100%;
     height: 100%;
+    min-height: 0;
     text-align: left;
     border: 0;
     border-bottom: 1px solid var(--border);
     border-radius: 0;
     background: transparent;
-    padding: 8px 16px;
+    padding: 8px 20px;
+    font-weight: 400;
+  }
+  .album:hover:not(:disabled) {
+    background: var(--surface-2);
   }
   .album.selected {
     background: var(--accent-soft);
+  }
+  .fmt {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: var(--surface-2);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .fmt.lossless {
+    background: var(--accent-soft);
+    color: var(--accent-soft-text);
   }
   .main,
   .side {
     display: flex;
     flex-direction: column;
+    gap: 2px;
     min-width: 0;
   }
   .main {
     flex: 1;
   }
   .side {
-    width: 34%;
     align-items: flex-end;
-    text-align: right;
+    max-width: 38%;
   }
   .name {
     font-weight: 600;
   }
   .meta {
     font-size: 12.5px;
+    color: var(--muted);
   }
   .who {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    font-size: 13px;
+    font-weight: 500;
   }
+  .plus {
+    margin-left: 4px;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .slot {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--warn);
+  }
+  .slot.free {
+    color: var(--good);
+  }
+
+  /* Details panel. */
   .details {
-    border-left: 1px solid var(--border);
-    background: var(--surface);
     display: flex;
     flex-direction: column;
     min-height: 0;
     min-width: 0;
-    padding: 12px 16px;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
   }
   .details-head {
     display: flex;
     align-items: center;
     gap: 8px;
+    padding: 14px 12px 12px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .details-head .title {
+    flex: 1;
+    min-width: 0;
   }
   .details-head h2 {
-    flex: 1;
-    margin: 0;
-    font-size: 16px;
-    text-transform: none;
-    letter-spacing: 0;
-    color: var(--text);
+    font-size: 17px;
+    letter-spacing: -0.01em;
   }
-  .details p {
-    margin: 4px 0 10px;
+  .back {
+    display: none;
+  }
+  .details-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .sources {
     list-style: none;
-    margin: 0 0 10px;
+    margin: 0;
     padding: 0;
-    max-height: 30%;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
   }
   .source {
     display: flex;
     justify-content: space-between;
-    gap: 8px;
+    align-items: center;
+    gap: 10px;
     width: 100%;
-    border: 0;
-    background: transparent;
-    padding: 6px 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    font-weight: 400;
   }
   .source.on {
+    border-color: var(--accent);
     background: var(--accent-soft);
+  }
+  .src-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
   }
   .folder {
     display: flex;
     gap: 10px;
     justify-content: space-between;
     align-items: baseline;
-    padding: 8px 0;
-    border-top: 1px solid var(--border);
+    padding-top: 6px;
   }
   .folder a {
     white-space: nowrap;
+    font-size: 13px;
   }
-  .get {
-    padding: 0 0 10px;
+  .files th:first-child {
+    width: auto;
+  }
+  .fcell {
+    overflow: hidden;
+  }
+  .fname {
+    display: block;
+  }
+  .fsub {
+    display: none;
+    font-size: 12px;
+    color: var(--muted);
   }
   th.act {
-    width: 44px;
+    width: 46px;
   }
   td.act {
     text-align: right;
   }
-  .files {
-    flex: 1;
-    overflow-y: auto;
+  .details-foot {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
   }
-  @media (max-width: 1000px) {
-    .page,
+  .details-foot :global(.wrap) {
+    width: 100%;
+  }
+
+  @media (max-width: 1100px) {
+    .page.has-details {
+      grid-template-columns: minmax(0, 1fr) minmax(340px, 48%);
+    }
+  }
+
+  /* Phones and narrow tablets: details become a full-screen sheet. */
+  @media (max-width: 860px) {
     .page.has-details {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto minmax(0, 1fr);
-    }
-    .recent {
-      border-right: 0;
-      border-bottom: 1px solid var(--border);
-      max-height: 170px;
     }
     .details {
       position: fixed;
-      inset: 48px 0 0 0;
-      z-index: 10;
+      inset: 0;
+      z-index: 30;
       border-left: 0;
+      animation: rise 0.2s ease;
     }
-    .side {
-      width: 40%;
+    .details-head {
+      padding: calc(8px + env(safe-area-inset-top)) 12px 10px 6px;
+    }
+    .back {
+      display: inline-flex;
+    }
+    .close {
+      display: none;
+    }
+    .details-foot {
+      padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    }
+  }
+
+  @media (max-width: 720px) {
+    .head {
+      padding: 12px 14px 10px;
+    }
+    .recent {
+      margin: 0 -14px;
+      padding: 0 14px;
+    }
+    .toolbar {
+      padding: 2px 14px 10px;
+    }
+    .err {
+      margin: 0 14px 8px;
+    }
+    .filter-toggle {
+      display: inline-flex;
+    }
+    .filter-toggle.on {
+      background: var(--accent-soft);
+      border-color: transparent;
+      color: var(--accent-soft-text);
+    }
+    .filters {
+      display: none;
+      padding: 0 14px 12px;
+    }
+    .filters.open {
+      display: flex;
+    }
+    .filters select,
+    .filters input:not([type='checkbox']) {
+      min-height: 40px;
+      font-size: 16px;
+    }
+    .exclude {
+      flex: 1 1 100%;
+    }
+    .album {
+      padding: 8px 14px;
+      gap: 10px;
+    }
+    .fmt {
+      width: 40px;
+      height: 40px;
+    }
+    .details-body {
+      padding: 14px;
+    }
+    .details-foot {
+      padding-left: 14px;
+      padding-right: 14px;
+    }
+    th.len,
+    td.len {
+      display: none;
+    }
+    .fsub {
+      display: block;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .hide-xs {
+      display: none;
     }
   }
 </style>

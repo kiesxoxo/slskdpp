@@ -3,6 +3,8 @@
   import { api, errorText, type Download, type DownloadState } from '../lib/api';
   import { downloads, isActive, stateLabel } from '../lib/downloads.svelte';
   import { plural, size, speed } from '../lib/format';
+  import Icon from '../lib/Icon.svelte';
+  import PageHead from '../lib/PageHead.svelte';
 
   interface Group {
     key: string;
@@ -85,6 +87,20 @@
     return total > 0 ? Math.min(100, (bytes / total) * 100) : 0;
   }
 
+  function badgeClass(d: Download): string {
+    if (d.searching) return 'warn';
+    switch (d.state) {
+      case 'transferring':
+      case 'initializing':
+        return 'accent';
+      case 'completed':
+        return 'good';
+      case 'failed':
+        return 'bad';
+    }
+    return '';
+  }
+
   function detail(d: Download): string {
     switch (d.state) {
       case 'transferring':
@@ -106,76 +122,82 @@
   }
 </script>
 
-<div class="page">
-  <div class="toolbar">
-    <div class="summary">
-      {#if totals.active}<span class="dot good pulse"></span>{/if}
-      <strong>{plural(totals.active, 'active download')}</strong>
-      <span class="muted">
-        {totals.rate > 0 ? speed(totals.rate) + ' · ' : ''}{totals.done} done{totals.failed ? ` · ${totals.failed} failed or cancelled` : ''}
-      </span>
-    </div>
-    <div class="actions">
-      <button disabled={!totals.done} onclick={() => clear(['completed'])}>Clear completed</button>
-      <button disabled={!totals.failed} onclick={() => clear(['failed', 'cancelled'])}>Clear failed</button>
-    </div>
-  </div>
-  {#if error}<p class="error banner" role="alert">{error}</p>{/if}
+<div class="page-scroll">
+  <div class="page-body">
+    <PageHead title="Downloads">
+      {#snippet summary()}
+        {#if totals.active}<span class="dot good pulse"></span>{/if}
+        <span>
+          <strong class="strong">{totals.active} active</strong>
+          {totals.rate > 0 ? ' · ' + speed(totals.rate) : ''} · {totals.done} done{totals.failed ? ` · ${totals.failed} failed` : ''}
+        </span>
+      {/snippet}
+      {#snippet actions()}
+        <button class="small" disabled={!totals.done} onclick={() => clear(['completed'])}><Icon name="check" size={16} /> Clear done</button>
+        <button class="small" disabled={!totals.failed} onclick={() => clear(['failed', 'cancelled'])}><Icon name="trash" size={16} /> Clear failed</button>
+      {/snippet}
+    </PageHead>
+    {#if error}<p class="banner" role="alert">{error}</p>{/if}
 
-  <div class="list">
     {#each groups as g (g.key)}
       {@const isOpen = open(g)}
-      <section class="group">
+      <section class="group card">
         <div class="group-head">
-          <button class="ghost caret" aria-expanded={isOpen} aria-label="Show files in {g.folder}" onclick={() => toggle(g)}>
-            {isOpen ? '▾' : '▸'}
+          <button class="icon-btn small caret" class:open={isOpen} aria-expanded={isOpen} aria-label="Show files in {g.folder}" onclick={() => toggle(g)}>
+            <Icon name="chevron" size={16} stroke={2.2} />
           </button>
-          <div class="group-title">
+          <button class="group-title" onclick={() => toggle(g)}>
             <span class="name ellipsis" title={g.folder}>{g.folder}</span>
             <span class="muted small ellipsis">
-              {g.users.join(', ')} · {g.done}/{g.items.length} files · {size(g.bytes)} of {size(g.total)}
-              {g.speed > 0 ? ' · ' + speed(g.speed) : ''}
+              {g.users.join(', ')} · {g.done}/{g.items.length} files · {size(g.bytes)} of {size(g.total)}{g.speed > 0 ? ' · ' + speed(g.speed) : ''}
             </span>
-          </div>
+          </button>
           <div class="group-actions">
             {#if g.failed}
-              <button onclick={() => each(g.items, (d) => d.state === 'failed' || d.state === 'cancelled', api.retryDownload)}>Retry failed</button>
+              <button class="small" onclick={() => each(g.items, (d) => d.state === 'failed' || d.state === 'cancelled', api.retryDownload)}>
+                <Icon name="retry" size={16} /> <span class="hide-xs">Retry</span>
+              </button>
             {/if}
             {#if g.active}
-              <button onclick={() => each(g.items, isActive, api.cancelDownload)}>Cancel</button>
+              <button class="small" onclick={() => each(g.items, isActive, api.cancelDownload)}>Cancel</button>
             {:else}
-              <button onclick={() => each(g.items, () => true, api.removeDownload)}>Remove</button>
+              <button class="icon-btn small" title="Remove from list" aria-label="Remove {g.folder}" onclick={() => each(g.items, () => true, api.removeDownload)}>
+                <Icon name="trash" size={17} />
+              </button>
             {/if}
           </div>
         </div>
-        <div class="bar" class:done={!g.active && !g.failed}>
+        <div class="bar group-bar" class:done={!g.active && !g.failed}>
           <span style:width="{pct(g.bytes, g.total)}%"></span>
         </div>
         {#if isOpen}
-          <ul>
+          <ul class="rows">
             {#each g.items as d (d.id)}
               <li>
                 <div class="file">
-                  <span class="ellipsis" title={d.filename}>{d.name}</span>
-                  <span class="muted small ellipsis" class:error={d.state === 'failed'}>{detail(d)}</span>
+                  <span class="ellipsis fname" title={d.filename}>{d.name}</span>
+                  <span class="meta">
+                    <span class="badge phone-only {badgeClass(d)}">{d.searching ? 'Finding source' : stateLabel[d.state]}</span>
+                    <span class="muted small ellipsis" class:error={d.state === 'failed'}>{detail(d)}</span>
+                  </span>
                   {#if d.state === 'transferring' || (d.bytes > 0 && isActive(d))}
                     <div class="bar thin"><span style:width="{pct(d.bytes, d.size)}%"></span></div>
                   {/if}
                 </div>
-                <span class="badge {d.searching ? 'searching' : d.state}">
-                  {d.searching ? 'Finding source' : stateLabel[d.state]}{d.sources > 1 ? ` · source ${d.sources}` : ''}
+                <span class="badge wide-only {badgeClass(d)}">
+                  {d.searching ? 'Finding source' : stateLabel[d.state]}{d.sources > 1 ? ` · #${d.sources}` : ''}
                 </span>
                 <span class="file-actions">
                   {#if isActive(d)}
                     {#if d.state === 'queued'}
-                      <button class="ghost" title="Try now" aria-label="Try {d.name} now" onclick={() => run(() => api.retryDownload(d.id))}>↻</button>
+                      <button class="icon-btn small" title="Try now" aria-label="Try {d.name} now" onclick={() => run(() => api.retryDownload(d.id))}><Icon name="retry" size={17} /></button>
                     {/if}
-                    <button class="ghost" title="Cancel" aria-label="Cancel {d.name}" onclick={() => run(() => api.cancelDownload(d.id))}>✕</button>
+                    <button class="icon-btn small" title="Cancel" aria-label="Cancel {d.name}" onclick={() => run(() => api.cancelDownload(d.id))}><Icon name="close" size={17} /></button>
                   {:else}
                     {#if d.state !== 'completed'}
-                      <button class="ghost" title="Retry" aria-label="Retry {d.name}" onclick={() => run(() => api.retryDownload(d.id))}>↻</button>
+                      <button class="icon-btn small" title="Retry" aria-label="Retry {d.name}" onclick={() => run(() => api.retryDownload(d.id))}><Icon name="retry" size={17} /></button>
                     {/if}
-                    <button class="ghost" title="Remove from list" aria-label="Remove {d.name}" onclick={() => run(() => api.removeDownload(d.id))}>🗑</button>
+                    <button class="icon-btn small" title="Remove from list" aria-label="Remove {d.name}" onclick={() => run(() => api.removeDownload(d.id))}><Icon name="trash" size={17} /></button>
                   {/if}
                 </span>
               </li>
@@ -184,168 +206,128 @@
         {/if}
       </section>
     {:else}
-      <p class="hint muted">Nothing downloading. Find an album in Search and press “Download folder”.</p>
+      <div class="card">
+        <div class="empty">
+          <span class="empty-icon"><Icon name="download" size={26} /></span>
+          <strong>Nothing downloading</strong>
+          <p>Find an album in Search and press “Download folder”. Progress shows up here.</p>
+        </div>
+      </div>
     {/each}
   </div>
 </div>
 
 <style>
-  .page {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
-  .small {
-    font-size: 12.5px;
-  }
-  .toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  .summary {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .actions {
-    display: flex;
-    gap: 6px;
-  }
-  .banner {
-    margin: 10px 16px 0;
-  }
-  .list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 12px 16px 24px;
-  }
-  .hint {
-    padding: 12px 0;
+  .strong {
+    color: var(--text);
   }
   .group {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 10px;
     overflow: hidden;
   }
   .group-head {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 12px 8px 6px;
+    padding: 12px 12px 10px 8px;
   }
-  .caret {
-    padding: 2px 8px;
-    color: var(--muted);
+  .caret :global(.icon) {
+    transition: transform 0.15s;
+  }
+  .caret.open :global(.icon) {
+    transform: rotate(90deg);
   }
   .group-title {
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     flex: 1;
     min-width: 0;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+    font-weight: 400;
   }
-  .name {
+  .group-title:hover:not(:disabled) {
+    background: transparent;
+  }
+  .group-title .name {
+    max-width: 100%;
     font-weight: 600;
+    font-size: 15px;
+  }
+  .group-title .small {
+    max-width: 100%;
   }
   .group-actions {
     display: flex;
     gap: 6px;
   }
-  .group-actions button {
-    padding: 4px 10px;
-    font-size: 13px;
-  }
-  .bar {
+  .group-bar {
     height: 3px;
-    background: var(--surface-2);
-  }
-  .bar span {
-    display: block;
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.4s ease;
-  }
-  .bar.done span {
-    background: var(--good);
-  }
-  .bar.thin {
-    height: 2px;
-    margin-top: 4px;
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  ul {
-    list-style: none;
+    border-radius: 0;
     margin: 0;
-    padding: 0;
   }
-  li {
+  .group-bar > span {
+    border-radius: 0;
+  }
+  ul.rows > li {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 7px 12px 7px 40px;
+    padding: 9px 12px 9px 46px;
+  }
+  ul.rows {
     border-top: 1px solid var(--border);
   }
   .file {
     display: flex;
     flex-direction: column;
+    gap: 2px;
     flex: 1;
     min-width: 0;
   }
-  .badge {
-    font-size: 12px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--surface-2);
-    color: var(--muted);
-    white-space: nowrap;
+  .fname {
+    font-weight: 500;
   }
-  .badge.transferring,
-  .badge.initializing {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .badge.searching {
-    color: var(--warn);
-  }
-  .badge.completed {
-    color: var(--good);
-  }
-  .badge.failed {
-    color: var(--bad);
+  .bar.thin {
+    height: 3px;
+    margin-top: 4px;
   }
   .file-actions {
     display: flex;
-    width: 64px;
     justify-content: flex-end;
+    min-width: 64px;
   }
-  .file-actions button {
-    padding: 2px 8px;
-    color: var(--muted);
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
   }
-  @media (max-width: 600px) {
-    .group-head {
-      flex-wrap: wrap;
+  .phone-only {
+    display: none;
+  }
+  @media (max-width: 720px) {
+    ul.rows > li {
+      padding: 10px 6px 10px 14px;
+      gap: 6px;
     }
-    .group-actions {
-      width: 100%;
-      justify-content: flex-end;
+    .phone-only {
+      display: inline-flex;
+      flex: none;
     }
-    li {
-      padding-left: 12px;
-      flex-wrap: wrap;
+    .wide-only {
+      display: none;
     }
-    .file {
-      flex-basis: 100%;
+    .file-actions {
+      min-width: 0;
     }
-    .badge {
-      margin-left: auto;
+  }
+  @media (max-width: 420px) {
+    .hide-xs {
+      display: none;
     }
   }
 </style>

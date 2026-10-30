@@ -6,6 +6,7 @@
   import { navigate } from '../lib/router.svelte';
   import VirtualList from '../lib/VirtualList.svelte';
   import DownloadButton from '../lib/DownloadButton.svelte';
+  import Icon from '../lib/Icon.svelte';
 
   let { user, folder }: { user: string; folder: string } = $props();
 
@@ -138,47 +139,79 @@
     }
     if (n.dir) selectedPath = n.path;
   }
+
+  function fileQuality(f: Dir['files'][number]): string {
+    if (f.bit_depth && f.sample_rate) return `${f.bit_depth}/${f.sample_rate / 1000}k`;
+    return f.bitrate ? `${f.bitrate}k` : '';
+  }
+
+  function keydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') selectedPath = null;
+  }
 </script>
 
-<div class="page">
+<svelte:window onkeydown={keydown} />
+
+<div class="page" class:has-files={selected?.dir}>
   <section class="tree">
-    <form class="bar" onsubmit={go}>
-      <input placeholder="Username" bind:value={input} aria-label="Username to browse" />
-      <button class="primary" disabled={loading || !input.trim()}>Browse</button>
-    </form>
-    {#if data}
-      <div class="bar">
-        <input type="search" placeholder="Filter folders" bind:value={filterText} aria-label="Filter folders" />
-      </div>
-      <p class="muted small summary">
-        {plural(stats.folders, 'folder')} · {plural(stats.files, 'file')} · {size(stats.bytes)}
-        {#if data.private_dirs?.length}· {plural(data.private_dirs.length, 'locked folder')}{/if}
-      </p>
-    {/if}
+    <div class="head">
+      <form class="user-form" onsubmit={go}>
+        <label class="field">
+          <Icon name="user" size={18} />
+          <input placeholder="Username" bind:value={input} aria-label="Username to browse" autocapitalize="off" autocomplete="off" />
+        </label>
+        <button class="primary" disabled={loading || !input.trim()}>Browse</button>
+      </form>
+      {#if data}
+        <label class="field">
+          <Icon name="filter" size={16} />
+          <input type="search" class="filter" placeholder="Filter folders" bind:value={filterText} aria-label="Filter folders" />
+        </label>
+        <p class="muted small">
+          {plural(stats.folders, 'folder')} · {plural(stats.files, 'file')} · {size(stats.bytes)}
+          {#if data.private_dirs?.length}· {plural(data.private_dirs.length, 'locked folder')}{/if}
+        </p>
+      {/if}
+    </div>
     <div class="list">
       {#if loading}
-        <p class="hint muted pulse">Asking {user} for their shares… large shares can take a minute.</p>
+        <div class="empty">
+          <span class="empty-icon pulse"><Icon name="browse" size={26} /></span>
+          <strong>Asking {user} for their shares…</strong>
+          <p>Large shares can take a minute.</p>
+        </div>
       {:else if error}
-        <p class="hint error" role="alert">{error}</p>
+        <div class="empty">
+          <span class="empty-icon err"><Icon name="close" size={26} /></span>
+          <strong>Could not browse {user}</strong>
+          <p class="error">{error}</p>
+        </div>
       {:else if !user}
-        <p class="hint muted">Enter a username to see what they share.</p>
+        <div class="empty">
+          <span class="empty-icon"><Icon name="browse" size={26} /></span>
+          <strong>Browse someone's shares</strong>
+          <p>Enter a username, or open one from a search result.</p>
+        </div>
       {:else}
-        <VirtualList items={rows} rowHeight={30}>
+        <VirtualList items={rows} rowHeight={40}>
           {#snippet row(n: Node)}
             <button
               class="node"
               class:selected={n.path === selectedPath}
-              style:padding-left="{(filterText ? 0 : n.depth) * 16 + 10}px"
+              style:padding-left="{(filterText ? 0 : n.depth) * 18 + 12}px"
               onclick={() => toggle(n)}
               title={n.path}
             >
-              <span class="caret">{n.children.length && !filterText ? (expanded.has(n.path) ? '▾' : '▸') : ''}</span>
+              <span class="caret" class:open={expanded.has(n.path)} class:none={!n.children.length || !!filterText}>
+                <Icon name="chevron" size={14} stroke={2.2} />
+              </span>
+              <Icon name="browse" size={17} />
               <span class="ellipsis">{filterText ? n.path : n.name}</span>
-              <span class="count muted">{n.total}</span>
+              <span class="count">{n.total}</span>
             </button>
           {/snippet}
           {#snippet empty()}
-            <p class="hint muted">{filterText ? 'No folders match.' : 'Nothing shared.'}</p>
+            <div class="empty"><strong>{filterText ? 'No folders match' : 'Nothing shared'}</strong></div>
           {/snippet}
         </VirtualList>
       {/if}
@@ -187,32 +220,30 @@
 
   <section class="files-pane">
     {#if selected?.dir}
-      <div class="head">
-        <h2 class="mono ellipsis" title={selected.path}>{selected.path}</h2>
-        <p class="muted small">{plural(selected.dir.files.length, 'file')} · {size(selectedBytes)}</p>
-        {#key selected.path}
-          <div class="get">
-            <DownloadButton
-              username={user}
-              folder={selected.dir.name}
-              files={selected.dir.files.map((f) => ({ path: f.path, size: f.size }))}
-              label="Download folder"
-            />
-          </div>
-        {/key}
+      <div class="files-head">
+        <button class="icon-btn back" aria-label="Back to folders" onclick={() => (selectedPath = null)}><Icon name="back" /></button>
+        <div class="title">
+          <h2 class="ellipsis" title={selected.path}>{selected.name}</h2>
+          <p class="muted small ellipsis">{plural(selected.dir.files.length, 'file')} · {size(selectedBytes)} · <span class="mono">{selected.path}</span></p>
+        </div>
       </div>
       <div class="scroll">
         <table class="files">
           <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num">Length</th><th class="act"></th></tr>
+            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num len">Length</th><th class="act"></th></tr>
           </thead>
           <tbody>
             {#each selected.dir.files as f (f.path)}
               <tr>
-                <td class="ellipsis" title={f.name}>{f.name}</td>
+                <td class="fcell" title={f.name}>
+                  <span class="ellipsis fname">{f.name}</span>
+                  {#if fileQuality(f) || f.duration}
+                    <span class="fsub">{[fileQuality(f), duration(f.duration)].filter(Boolean).join(' · ')}</span>
+                  {/if}
+                </td>
                 <td class="num">{size(f.size)}</td>
-                <td class="num opt">{f.bit_depth && f.sample_rate ? `${f.bit_depth}/${f.sample_rate / 1000}k` : f.bitrate ? `${f.bitrate}k` : ''}</td>
-                <td class="num">{duration(f.duration)}</td>
+                <td class="num opt">{fileQuality(f)}</td>
+                <td class="num len">{duration(f.duration)}</td>
                 <td class="act">
                   <DownloadButton compact username={user} files={[{ path: f.path, size: f.size }]} label="Download {f.name}" />
                 </td>
@@ -223,8 +254,22 @@
           </tbody>
         </table>
       </div>
+      {#key selected.path}
+        <div class="files-foot">
+          <DownloadButton
+            username={user}
+            folder={selected.dir.name}
+            files={selected.dir.files.map((f) => ({ path: f.path, size: f.size }))}
+            label="Download folder"
+          />
+        </div>
+      {/key}
     {:else if data}
-      <p class="hint muted">Pick a folder to see its files.</p>
+      <div class="empty">
+        <span class="empty-icon"><Icon name="music" size={26} /></span>
+        <strong>Pick a folder</strong>
+        <p>Its files show here, ready to download.</p>
+      </div>
     {/if}
   </section>
 </div>
@@ -232,11 +277,9 @@
 <style>
   .page {
     display: grid;
-    grid-template-columns: minmax(280px, 40%) minmax(0, 1fr);
+    grid-template-columns: minmax(300px, 40%) minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
     height: 100%;
-  }
-  .small {
-    font-size: 12.5px;
   }
   .tree {
     display: flex;
@@ -245,93 +288,180 @@
     border-right: 1px solid var(--border);
     background: var(--surface);
   }
-  .bar {
+  .head {
     display: flex;
-    gap: 6px;
-    padding: 12px 12px 0;
+    flex-direction: column;
+    gap: 10px;
+    padding: 18px 16px 12px;
+    border-bottom: 1px solid var(--border);
   }
-  .bar input {
+  .user-form {
+    display: flex;
+    gap: 8px;
+  }
+  .field {
+    position: relative;
     flex: 1;
+    display: flex;
+    align-items: center;
+    color: var(--faint);
   }
-  .summary {
-    margin: 8px 12px;
+  .field :global(.icon) {
+    position: absolute;
+    left: 12px;
+    pointer-events: none;
+  }
+  .field input {
+    width: 100%;
+    padding-left: 38px;
+    color: var(--text);
   }
   .list {
     flex: 1;
     min-height: 0;
-    margin-top: 6px;
-    border-top: 1px solid var(--border);
-  }
-  .hint {
-    padding: 16px;
-    margin: 0;
   }
   .node {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 8px;
     width: 100%;
     height: 100%;
+    min-height: 0;
     border: 0;
     border-radius: 0;
     background: transparent;
     text-align: left;
-    padding-right: 10px;
+    padding-right: 14px;
+    font-weight: 400;
+    color: var(--text);
+  }
+  .node :global(.icon) {
+    color: var(--faint);
   }
   .node.selected {
     background: var(--accent-soft);
+    color: var(--accent-soft-text);
+  }
+  .node.selected :global(.icon) {
+    color: var(--accent-soft-text);
   }
   .caret {
+    display: grid;
+    place-items: center;
     width: 14px;
-    flex: none;
-    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  .caret.open {
+    transform: rotate(90deg);
+  }
+  .caret.none {
+    visibility: hidden;
   }
   .node .ellipsis {
     flex: 1;
   }
   .count {
     font-size: 12px;
+    color: var(--muted);
     font-variant-numeric: tabular-nums;
   }
+  .empty-icon.err {
+    background: var(--bad-soft);
+    color: var(--bad);
+  }
   .files-pane {
-    background: var(--surface);
     display: flex;
     flex-direction: column;
     min-height: 0;
     min-width: 0;
+    background: var(--surface);
   }
-  .head {
-    padding: 12px 16px 4px;
+  .files-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border);
   }
-  .head h2 {
-    margin: 0;
-    font-weight: 600;
+  .title {
+    flex: 1;
+    min-width: 0;
   }
-  .head p {
-    margin: 4px 0 0;
+  .title h2 {
+    font-size: 17px;
   }
-  .get {
-    margin-top: 10px;
+  .back {
+    display: none;
+  }
+  .scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 12px;
+  }
+  .fcell {
+    overflow: hidden;
+  }
+  .fname {
+    display: block;
+  }
+  .fsub {
+    display: none;
+    font-size: 12px;
+    color: var(--muted);
   }
   th.act {
-    width: 44px;
+    width: 46px;
   }
   td.act {
     text-align: right;
   }
-  .scroll {
-    flex: 1;
-    overflow-y: auto;
-    padding: 0 8px;
+  .files-foot {
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
   }
-  @media (max-width: 800px) {
+
+  @media (max-width: 860px) {
     .page {
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: minmax(0, 55%) minmax(0, 45%);
     }
     .tree {
       border-right: 0;
-      border-bottom: 1px solid var(--border);
+    }
+    .files-pane {
+      display: none;
+    }
+    .has-files .files-pane {
+      display: flex;
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      animation: rise 0.2s ease;
+    }
+    .files-head {
+      padding: calc(8px + env(safe-area-inset-top)) 14px 10px 6px;
+    }
+    .back {
+      display: inline-flex;
+    }
+    .files-foot {
+      padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    }
+  }
+
+  @media (max-width: 720px) {
+    .head {
+      padding: 12px 14px 10px;
+    }
+    .node {
+      font-size: 15px;
+    }
+    th.len,
+    td.len {
+      display: none;
+    }
+    .fsub {
+      display: block;
     }
   }
 </style>

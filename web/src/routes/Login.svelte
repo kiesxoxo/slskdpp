@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, errorText } from '../lib/api';
   import { session } from '../lib/session.svelte';
+  import Logo from '../lib/Logo.svelte';
 
   let username = $state('');
   let password = $state('');
@@ -22,18 +23,22 @@
 </script>
 
 <div class="wrap">
-  <form onsubmit={submit}>
-    <h1>slskdpp</h1>
+  <form class="card" onsubmit={submit}>
+    <div class="head">
+      <Logo size={56} />
+      <h1>slskdpp</h1>
+      <p class="muted">Sign in to your Soulseek client</p>
+    </div>
     <label>
-      Username
-      <input bind:value={username} autocomplete="username" required />
+      <span>Username</span>
+      <input bind:value={username} autocomplete="username" autocapitalize="off" required />
     </label>
     <label>
-      Password
+      <span>Password</span>
       <input type="password" bind:value={password} autocomplete="current-password" required />
     </label>
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <button class="primary" disabled={busy}>{busy ? 'Logging in…' : 'Log in'}</button>
+    {#if error}<p class="banner" role="alert">{error}</p>{/if}
+    <button class="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
   </form>
 </div>
 
@@ -41,35 +46,46 @@
   .wrap {
     display: grid;
     place-items: center;
-    height: 100%;
-    padding: 16px;
+    min-height: 100dvh;
+    padding: 20px;
+    background:
+      radial-gradient(60rem 30rem at 50% -10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+      var(--bg);
   }
   form {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    width: min(340px, 100%);
-    padding: 28px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    gap: 16px;
+    width: min(380px, 100%);
+    padding: 32px 28px 28px;
+    box-shadow: var(--shadow-lg);
+  }
+  .head {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    text-align: center;
   }
   h1 {
-    margin: 0 0 4px;
-    font-size: 22px;
+    margin-top: 8px;
+    font-size: 24px;
+    letter-spacing: -0.02em;
   }
   label {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    color: var(--muted);
+    gap: 6px;
     font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
   }
   label input {
     color: var(--text);
-    font-size: 14px;
   }
-  p {
-    margin: 0;
+  button {
+    margin-top: 4px;
+    min-height: 42px;
   }
 </style>

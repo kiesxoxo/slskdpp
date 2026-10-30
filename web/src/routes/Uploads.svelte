@@ -3,6 +3,8 @@
   import { href } from '../lib/router.svelte';
   import { isUploading, uploadSlots, uploads } from '../lib/uploads.svelte';
   import { plural, size, speed } from '../lib/format';
+  import Icon from '../lib/Icon.svelte';
+  import PageHead from '../lib/PageHead.svelte';
 
   let error = $state('');
 
@@ -32,18 +34,26 @@
     failed: 'Failed',
     cancelled: 'Cancelled',
   };
+  const badge: Record<Upload['state'], string> = {
+    queued: '',
+    initializing: 'accent',
+    transferring: 'accent',
+    completed: 'good',
+    failed: 'bad',
+    cancelled: '',
+  };
 </script>
 
-{#snippet row(u: Upload, i?: number)}
+{#snippet row(u: Upload, place?: number)}
   <li>
     <div class="file">
-      <span class="ellipsis" title={u.filename}>{u.name}</span>
+      <span class="ellipsis fname" title={u.filename}>{u.name}</span>
       <span class="muted small ellipsis">
         <a href={href(['browse', u.username])}>{u.username}</a> ·
         {#if u.state === 'transferring'}
           {size(u.bytes)} of {size(u.size)} · {speed(u.speed)}
-        {:else if u.state === 'queued' && i !== undefined}
-          place {i + 1} · {size(u.size)}
+        {:else if place !== undefined}
+          #{place} in queue · {size(u.size)}
         {:else if u.error}
           <span class:error={u.state === 'failed'}>{u.error}</span>
         {:else}
@@ -51,148 +61,110 @@
         {/if}
       </span>
       {#if u.state === 'transferring'}
-        <div class="bar"><span style:width="{u.size ? (u.bytes / u.size) * 100 : 0}%"></span></div>
+        <div class="bar thin"><span style:width="{u.size ? (u.bytes / u.size) * 100 : 0}%"></span></div>
       {/if}
     </div>
-    <span class="badge {u.state}">{stateLabel[u.state]}</span>
-    <span class="actions">
-      {#if u.state === 'queued' || isUploading(u)}
-        <button class="ghost" title="Cancel" aria-label="Cancel {u.name}" onclick={() => run(() => api.cancelUpload(u.id))}>✕</button>
-      {:else}
-        <button class="ghost" title="Remove from list" aria-label="Remove {u.name}" onclick={() => run(() => api.removeUpload(u.id))}>🗑</button>
-      {/if}
-    </span>
+    <span class="badge {badge[u.state]}">{stateLabel[u.state]}</span>
+    {#if u.state === 'queued' || isUploading(u)}
+      <button class="icon-btn small" title="Cancel" aria-label="Cancel {u.name}" onclick={() => run(() => api.cancelUpload(u.id))}><Icon name="close" size={17} /></button>
+    {:else}
+      <button class="icon-btn small" title="Remove from list" aria-label="Remove {u.name}" onclick={() => run(() => api.removeUpload(u.id))}><Icon name="trash" size={17} /></button>
+    {/if}
   </li>
 {/snippet}
 
-<div class="page">
-  <div class="toolbar">
-    <div class="summary">
-      {#if active.length}<span class="dot good pulse"></span>{/if}
-      <strong>{active.length} of {uploadSlots.slots} slots in use</strong>
-      <span class="muted">{rate > 0 ? speed(rate) + ' · ' : ''}{plural(queued.length, 'file')} queued</span>
-    </div>
-    <button disabled={!finished.length} onclick={() => run(() => api.clearUploads())}>Clear finished</button>
-  </div>
-  {#if error}<p class="error banner" role="alert">{error}</p>{/if}
-  <div class="list">
+<div class="page-scroll">
+  <div class="page-body">
+    <PageHead title="Uploads">
+      {#snippet summary()}
+        <span class="slots" aria-label="{active.length} of {uploadSlots.slots} upload slots in use">
+          {#each { length: Math.max(uploadSlots.slots, 1) } as _, i (i)}
+            <span class="slot" class:used={i < active.length}></span>
+          {/each}
+        </span>
+        <span>
+          <strong class="strong">{active.length}/{uploadSlots.slots}</strong> slots{rate > 0 ? ' · ' + speed(rate) : ''} · {plural(queued.length, 'file')} queued
+        </span>
+      {/snippet}
+      {#snippet actions()}
+        <button class="small" disabled={!finished.length} onclick={() => run(() => api.clearUploads())}><Icon name="check" size={16} /> Clear finished</button>
+      {/snippet}
+    </PageHead>
+    {#if error}<p class="banner" role="alert">{error}</p>{/if}
+
     {#if active.length}
-      <h2>Uploading</h2>
-      <ul>{#each active as u (u.id)}{@render row(u)}{/each}</ul>
+      <section>
+        <h2 class="section-title">Uploading</h2>
+        <ul class="rows card">{#each active as u (u.id)}{@render row(u)}{/each}</ul>
+      </section>
     {/if}
     {#if queued.length}
-      <h2>Queued</h2>
-      <ul>{#each queued as u, i (u.id)}{@render row(u, i)}{/each}</ul>
+      <section>
+        <h2 class="section-title">Queued</h2>
+        <ul class="rows card">{#each queued as u, i (u.id)}{@render row(u, i + 1)}{/each}</ul>
+      </section>
     {/if}
     {#if finished.length}
-      <h2>Finished</h2>
-      <ul>{#each finished as u (u.id)}{@render row(u)}{/each}</ul>
+      <section>
+        <h2 class="section-title">Finished</h2>
+        <ul class="rows card">{#each finished as u (u.id)}{@render row(u)}{/each}</ul>
+      </section>
     {/if}
     {#if !all.length}
-      <p class="hint muted">Nobody is downloading from you right now. Files you share are listed under <a href={href(['shares'])}>Shares</a>.</p>
+      <div class="card">
+        <div class="empty">
+          <span class="empty-icon"><Icon name="upload" size={26} /></span>
+          <strong>Nobody is downloading from you</strong>
+          <p>People who find your files queue them here. Manage what you share under <a href={href(['shares'])}>Shares</a>.</p>
+        </div>
+      </div>
     {/if}
   </div>
 </div>
 
 <style>
-  .page {
+  .strong {
+    color: var(--text);
+  }
+  section {
     display: flex;
     flex-direction: column;
-    height: 100%;
-  }
-  .small {
-    font-size: 12.5px;
-  }
-  .toolbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border);
-  }
-  .summary {
-    display: flex;
-    align-items: center;
     gap: 8px;
   }
-  .banner {
-    margin: 10px 16px 0;
+  .slots {
+    display: inline-flex;
+    gap: 3px;
   }
-  .list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 4px 16px 24px;
+  .slot {
+    width: 10px;
+    height: 14px;
+    border-radius: 3px;
+    background: var(--surface-3);
   }
-  h2 {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 16px 0 6px;
+  .slot.used {
+    background: var(--accent);
   }
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
+  ul.rows {
     overflow: hidden;
   }
-  li {
+  ul.rows > li {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 12px;
-  }
-  li + li {
-    border-top: 1px solid var(--border);
+    padding: 10px 10px 10px 16px;
   }
   .file {
     display: flex;
     flex-direction: column;
+    gap: 2px;
     flex: 1;
     min-width: 0;
   }
-  .bar {
-    height: 2px;
+  .fname {
+    font-weight: 500;
+  }
+  .bar.thin {
+    height: 3px;
     margin-top: 4px;
-    background: var(--surface-2);
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .bar span {
-    display: block;
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.4s ease;
-  }
-  .badge {
-    font-size: 12px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--surface-2);
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .badge.transferring,
-  .badge.initializing {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .badge.completed {
-    color: var(--good);
-  }
-  .badge.failed {
-    color: var(--bad);
-  }
-  .actions button {
-    padding: 2px 8px;
-    color: var(--muted);
-  }
-  .hint {
-    padding: 12px 0;
   }
 </style>
