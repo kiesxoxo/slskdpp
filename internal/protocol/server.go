@@ -30,6 +30,7 @@ const (
 	CodeAcceptChildren        uint32 = 100
 	CodePossibleParents       uint32 = 102
 	CodeWishlistInterval      uint32 = 104
+	CodeSendUploadSpeed       uint32 = 121
 	CodeBranchLevel           uint32 = 126
 	CodeBranchRoot            uint32 = 127
 	CodeResetDistributed      uint32 = 130
@@ -165,6 +166,13 @@ func (m SharedFoldersFiles) encode(w *Writer) {
 	w.Uint32(m.Folders)
 	w.Uint32(m.Files)
 }
+
+// SendUploadSpeed reports the speed of an upload that just finished, in
+// bytes per second; the server keeps an average that others see.
+type SendUploadSpeed struct{ Speed uint32 }
+
+func (SendUploadSpeed) serverCode() uint32 { return CodeSendUploadSpeed }
+func (m SendUploadSpeed) encode(w *Writer) { w.Uint32(m.Speed) }
 
 type HaveNoParent struct{ NoParent bool }
 

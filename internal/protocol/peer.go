@@ -155,6 +155,23 @@ func EncodePeer(m PeerMessage) []byte {
 	return Frame(w.Bytes())
 }
 
+// Encoded is a peer message whose payload was encoded ahead of time, such
+// as a share list built once and sent to everyone who browses us.
+type Encoded struct {
+	Code    uint32
+	Payload []byte
+}
+
+func (m Encoded) peerCode() uint32 { return m.Code }
+func (m Encoded) encode(w *Writer) { w.Raw(m.Payload) }
+
+// EncodePayload encodes m's payload alone, for use in an Encoded.
+func EncodePayload(m PeerMessage) Encoded {
+	var w Writer
+	m.encode(&w)
+	return Encoded{Code: m.peerCode(), Payload: w.Bytes()}
+}
+
 // compressed encodes fill into a zlib payload appended to w.
 func compressed(w *Writer, fill func(w *Writer)) {
 	var inner Writer
