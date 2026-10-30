@@ -1,0 +1,20 @@
+# Copy to slskdpp.yaml. Any value can also be set with SLSKDPP_* env vars
+# (e.g. SLSKDPP_USERNAME, SLSKDPP_PASSWORD, SLSKDPP_LISTEN_PORT).
+soulseek:
+  username: ""
+  password: ""
+  server: server.slsknet.org:2242
+  listen_port: 2234   # forward this TCP port on your router for best results
+
+directories:
+  data: data          # database and state
+  # downloads: data/downloads
+  # incomplete: data/incomplete
+
+web:
+  listen: ":5030"
+  username: slskdpp
+  password: ""
+
+shares: []
+log_level: info
