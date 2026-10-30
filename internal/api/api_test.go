@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +23,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/store"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
@@ -63,12 +66,18 @@ func (n *fakeNet) FolderContents(ctx context.Context, u, folder string) (protoco
 
 func (n *fakeNet) SendPeer(context.Context, string, protocol.PeerMessage) error { return nil }
 func (n *fakeNet) WatchUser(string) error                                       { return nil }
+func (n *fakeNet) ConnectFile(context.Context, string, uint32) (net.Conn, error) {
+	return nil, errors.New("no file connections in tests")
+}
 
 type env struct {
 	srv  *httptest.Server
 	net  *fakeNet
 	mgr  *search.Manager
 	dl   *transfers.Manager
+	up   *transfers.Uploads
+	idx  *shares.Index
+	dir  string
 	bus  *events.Bus
 	http *http.Client // carries the session cookie once logged in
 }
@@ -91,11 +100,22 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.dir = dir
+	os.MkdirAll(filepath.Join(dir, "music", "Album"), 0o755)
+	os.WriteFile(filepath.Join(dir, "music", "Album", "song.mp3"), []byte("abc"), 0o644)
+	e.idx, err = shares.Open(shares.Config{Roots: []shares.Root{shares.ParseRoot(filepath.Join(dir, "music"))}}, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.idx.Run(ctx)
+	e.up = transfers.NewUploads(transfers.UploadConfig{}, e.net, e.idx)
 	ui := fstest.MapFS{
 		"index.html":    {Data: []byte("<!doctype html><title>app</title>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Bus: e.bus})
+	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx, Bus: e.bus})
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(e.srv.Close)
 	jar, _ := cookiejar.New(nil)
@@ -449,5 +469,61 @@ func TestBrowseBuildsFullPaths(t *testing.T) {
 	_, b := e.do(t, "GET", "/api/v1/users/bob/folder?path="+url.QueryEscape(`@@x\Album`), nil)
 	if !strings.Contains(string(b), `"path":"@@x\\Album\\01.flac"`) {
 		t.Errorf("folder listing paths: %s", b)
+	}
+}
+
+func TestShares(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	deadline := time.Now().Add(5 * time.Second)
+	for e.idx.Stats().Files != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	_, b := e.do(t, "GET", "/api/v1/shares", nil)
+	if !strings.Contains(string(b), `"alias":"music"`) || !strings.Contains(string(b), `"files":1`) || !strings.Contains(string(b), `"from_config":true`) {
+		t.Errorf("shares: %s", b)
+	}
+
+	other := filepath.Join(e.dir, "other")
+	os.MkdirAll(other, 0o755)
+	if resp, b := e.do(t, "POST", "/api/v1/shares", map[string]string{"path": "relative/dir"}); resp.StatusCode != 400 {
+		t.Errorf("relative path: %d %s", resp.StatusCode, b)
+	}
+	if resp, b := e.do(t, "POST", "/api/v1/shares", map[string]string{"path": other, "alias": "Extra"}); resp.StatusCode != 201 || !strings.Contains(string(b), `"alias":"Extra"`) {
+		t.Errorf("add: %d %s", resp.StatusCode, b)
+	}
+	if resp, _ := e.do(t, "DELETE", "/api/v1/shares/music", nil); resp.StatusCode != 409 {
+		t.Errorf("removing config share: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "DELETE", "/api/v1/shares/Extra", nil); resp.StatusCode != 204 {
+		t.Errorf("remove: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v1/shares/rescan", nil); resp.StatusCode != 202 {
+		t.Errorf("rescan: %d", resp.StatusCode)
+	}
+
+	resp, b := e.do(t, "GET", "/api/v1/folders?path="+url.QueryEscape(e.dir), nil)
+	if resp.StatusCode != 200 || !strings.Contains(string(b), `"folders":["music","other"]`) {
+		t.Errorf("folders: %d %s", resp.StatusCode, b)
+	}
+}
+
+func TestUploadsEndpoint(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	deadline := time.Now().Add(5 * time.Second)
+	for e.idx.Stats().Files != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.up.HandlePeer("bob", protocol.QueueUpload{Filename: `music\Album\song.mp3`})
+	_, b := e.do(t, "GET", "/api/v1/uploads", nil)
+	if !strings.Contains(string(b), `"username":"bob"`) || !strings.Contains(string(b), `"slots":2`) {
+		t.Errorf("uploads: %s", b)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v1/uploads/1/cancel", nil); resp.StatusCode != 204 {
+		t.Errorf("cancel: %d", resp.StatusCode)
+	}
+	if resp, b := e.do(t, "POST", "/api/v1/uploads/clear", nil); !strings.Contains(string(b), `"removed":1`) {
+		t.Errorf("clear: %d %s", resp.StatusCode, b)
 	}
 }

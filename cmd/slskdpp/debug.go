@@ -47,7 +47,7 @@ func newDebugClient(cfg client.ServerConfig, onPeer func(user string, m any) boo
 	var c *client.Client
 	c = client.New(cfg, client.Handlers{Peer: func(user string, m any) {
 		if onPeer == nil || !onPeer(user, m) {
-			answerPeer(c, user, m)
+			newResponder(c, nil, nil).peer(user, m)
 		}
 	}})
 	return c

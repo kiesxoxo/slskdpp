@@ -16,6 +16,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
 
@@ -45,6 +46,8 @@ type Deps struct {
 	Net       Network
 	Searches  *search.Manager
 	Downloads *transfers.Manager
+	Uploads   *transfers.Uploads
+	Shares    *shares.Index
 	Bus       *events.Bus
 }
 
@@ -54,6 +57,8 @@ type API struct {
 	net       Network
 	searches  *search.Manager
 	downloads *transfers.Manager
+	uploads   *transfers.Uploads
+	shares    *shares.Index
 	bus       *events.Bus
 	limiter   *loginLimiter
 	now       func() time.Time
@@ -71,6 +76,8 @@ func New(cfg Config, d Deps) http.Handler {
 		net:       d.Net,
 		searches:  d.Searches,
 		downloads: d.Downloads,
+		uploads:   d.Uploads,
+		shares:    d.Shares,
 		bus:       d.Bus,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
@@ -101,6 +108,17 @@ func New(cfg Config, d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/downloads/{id}/cancel", a.auth(a.cancelDownload))
 	mux.HandleFunc("POST /api/v1/downloads/{id}/retry", a.auth(a.retryDownload))
 	mux.HandleFunc("DELETE /api/v1/downloads/{id}", a.auth(a.removeDownload))
+
+	mux.HandleFunc("GET /api/v1/uploads", a.auth(a.listUploads))
+	mux.HandleFunc("POST /api/v1/uploads/clear", a.auth(a.clearUploads))
+	mux.HandleFunc("POST /api/v1/uploads/{id}/cancel", a.auth(a.cancelUpload))
+	mux.HandleFunc("DELETE /api/v1/uploads/{id}", a.auth(a.removeUpload))
+
+	mux.HandleFunc("GET /api/v1/shares", a.auth(a.listShares))
+	mux.HandleFunc("POST /api/v1/shares", a.auth(a.addShare))
+	mux.HandleFunc("POST /api/v1/shares/rescan", a.auth(a.rescanShares))
+	mux.HandleFunc("DELETE /api/v1/shares/{alias}", a.auth(a.removeShare))
+	mux.HandleFunc("GET /api/v1/folders", a.auth(a.localFolders))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")

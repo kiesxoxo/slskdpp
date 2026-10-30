@@ -42,6 +42,11 @@ type Transfers struct {
 	// Speed limits in KiB/s; 0 means unlimited.
 	DownloadSpeedLimit    int64 `yaml:"download_speed_limit"`
 	PerDownloadSpeedLimit int64 `yaml:"per_download_speed_limit"`
+	UploadSpeedLimit      int64 `yaml:"upload_speed_limit"`
+	// UploadSlots is how many uploads run at once.
+	UploadSlots int `yaml:"upload_slots"`
+	// MaxQueuedPerUser caps how many files one user may queue from us.
+	MaxQueuedPerUser int `yaml:"max_queued_per_user"`
 }
 
 type Web struct {
@@ -57,7 +62,7 @@ func Default() Config {
 			ListenPort: 2234,
 		},
 		Directories: Directories{Data: "data"},
-		Transfers:   Transfers{MaxAttempts: 5, MaxSources: 3},
+		Transfers:   Transfers{MaxAttempts: 5, MaxSources: 3, UploadSlots: 2, MaxQueuedPerUser: 500},
 		Web:         Web{Listen: ":5030", Username: "slskdpp"},
 		LogLevel:    "info",
 	}

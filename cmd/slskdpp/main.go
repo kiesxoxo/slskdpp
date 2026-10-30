@@ -21,6 +21,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/store"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
 	"github.com/kiesxoxo/slskdpp/web"
@@ -109,10 +110,15 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	var c *client.Client
 	var searches *search.Manager
 	var downloads *transfers.Manager
+	var uploads *transfers.Uploads
+	var index *shares.Index
+	var respond *responder
 	c = client.New(srvCfg, client.Handlers{
 		Server: func(m any) {
 			downloads.HandleServer(m)
 			switch m := m.(type) {
+			case protocol.ExcludedSearchPhrases:
+				index.SetExcluded(m.Phrases)
 			case protocol.AdminMessage:
 				log.Info("admin message", "text", m.Text)
 			default:
@@ -124,11 +130,12 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 				searches.HandleResponse(user, r)
 				return
 			}
-			if downloads.HandlePeer(user, m) {
+			if downloads.HandlePeer(user, m) || uploads.HandlePeer(user, m) {
 				return
 			}
-			answerPeer(c, user, m)
+			respond.peer(user, m)
 		},
+		Search: func(s protocol.SearchRequest) { respond.search(s) },
 		File: func(user string, token uint32, conn net.Conn) {
 			downloads.HandleFileConn(user, token, conn)
 		},
@@ -171,7 +178,43 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	}
 	go downloads.Run(ctx)
 
-	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Bus: bus}, log)
+	roots := make([]shares.Root, 0, len(cfg.Shares))
+	for _, s := range cfg.Shares {
+		roots = append(roots, shares.ParseRoot(s))
+	}
+	index, err = shares.Open(shares.Config{
+		Roots: roots,
+		OnChange: func() {
+			st := index.Stats()
+			c.SetShared(uint32(st.Folders), uint32(st.Files))
+			bus.Publish(events.Event{Type: events.TypeShares, Data: st})
+		},
+		Logger: log,
+	}, db)
+	if err != nil {
+		return fmt.Errorf("shares: %w", err)
+	}
+	st := index.Stats()
+	c.SetShared(uint32(st.Folders), uint32(st.Files))
+	go index.Run(ctx)
+
+	uploads = transfers.NewUploads(transfers.UploadConfig{
+		Slots:            cfg.Transfers.UploadSlots,
+		MaxQueuedPerUser: cfg.Transfers.MaxQueuedPerUser,
+		SpeedLimit:       cfg.Transfers.UploadSpeedLimit * 1024,
+		OnUpdate: func(v transfers.UploadView) {
+			bus.Publish(events.Event{Type: events.TypeUpload, Data: v})
+		},
+		OnRemove: func(id int64) {
+			bus.Publish(events.Event{Type: events.TypeUploadRemoved, Data: events.DownloadRemoved{ID: id}})
+		},
+		OnSpeed: func(speed uint32) { c.Server().Send(protocol.SendUploadSpeed{Speed: speed}) },
+		Logger:  log,
+	}, c, index)
+	go uploads.Run(ctx)
+	respond = newResponder(c, index, uploads)
+
+	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Bus: bus}, log)
 	if err != nil {
 		return err
 	}
@@ -222,20 +265,6 @@ func serveWeb(ctx context.Context, cfg config.Config, deps api.Deps, log *slog.L
 		defer cancel()
 		srv.Shutdown(ctx)
 	}, nil
-}
-
-// answerPeer handles the peer requests every mode answers the same way.
-func answerPeer(c *client.Client, user string, m any) {
-	switch m.(type) {
-	case protocol.UserInfoRequest:
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			defer cancel()
-			c.SendPeer(ctx, user, protocol.UserInfoResponse{Description: "slskdpp"})
-		}()
-	default:
-		slog.Debug("peer message", "user", user, "type", fmt.Sprintf("%T", m))
-	}
 }
 
 func newLogger(level string) *slog.Logger {

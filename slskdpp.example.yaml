@@ -21,6 +21,11 @@ transfers:
   max_sources: 3                # users a file is tried from before giving up
   download_speed_limit: 0       # KiB/s, 0 = unlimited
   per_download_speed_limit: 0   # KiB/s per file
+  upload_slots: 2               # uploads at once, one per user
+  max_queued_per_user: 500      # files one user may queue from us
+  upload_speed_limit: 0         # KiB/s, 0 = unlimited
 
+# Folders to share, as "/path" (shared under the folder's name) or
+# "Alias=/path". More can be added from the web UI.
 shares: []
 log_level: info

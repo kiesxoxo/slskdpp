@@ -17,6 +17,12 @@ const (
 	TypeDownload = "download"
 	// Data is DownloadRemoved.
 	TypeDownloadRemoved = "download.removed"
+	// Data is a transfers.UploadView.
+	TypeUpload = "upload"
+	// Data is DownloadRemoved (an upload ID).
+	TypeUploadRemoved = "upload.removed"
+	// Data is shares.Stats.
+	TypeShares = "shares"
 )
 
 // Event is one update. Data is marshalled to JSON for subscribers.
