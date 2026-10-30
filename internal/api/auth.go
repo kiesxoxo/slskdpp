@@ -87,9 +87,18 @@ func (a *API) verifySession(token string) (string, bool) {
 	return user, true
 }
 
-// auth rejects requests without a valid session.
+// auth rejects requests without a valid API key or session. A request
+// that carries a key is judged by the key alone.
 func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if key := requestKey(r); key != "" {
+			if a.keys == nil || !a.keys.check(key) {
+				writeError(w, http.StatusUnauthorized, "invalid API key")
+				return
+			}
+			next(w, withKey(r))
+			return
+		}
 		c, err := r.Cookie(sessionCookie)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "not logged in")

@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -36,6 +38,8 @@ type Config struct {
 	Password string
 	// SessionKey signs session cookies; see LoadOrCreateKey.
 	SessionKey []byte
+	// APIKeys are accepted besides the keys created in the UI.
+	APIKeys []string
 	// UI is the built web app. Without an index.html a placeholder page
 	// is served.
 	UI     fs.FS
@@ -51,6 +55,8 @@ type Deps struct {
 	Shares    *shares.Index
 	Hooks     *hooks.Runner
 	Bus       *events.Bus
+	// DB stores API keys; without it only Config.APIKeys work.
+	DB *sql.DB
 }
 
 type API struct {
@@ -63,12 +69,13 @@ type API struct {
 	shares    *shares.Index
 	hooks     *hooks.Runner
 	bus       *events.Bus
+	keys      *keyring
 	limiter   *loginLimiter
 	now       func() time.Time
 }
 
 // New returns the HTTP handler for the API and UI.
-func New(cfg Config, d Deps) http.Handler {
+func New(cfg Config, d Deps) (http.Handler, error) {
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
@@ -85,6 +92,10 @@ func New(cfg Config, d Deps) http.Handler {
 		bus:       d.Bus,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
+	}
+	var err error
+	if a.keys, err = newKeyring(d.DB, cfg.APIKeys); err != nil {
+		return nil, fmt.Errorf("loading API keys: %w", err)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/session", a.login)
@@ -124,6 +135,10 @@ func New(cfg Config, d Deps) http.Handler {
 	mux.HandleFunc("DELETE /api/v1/shares/{alias}", a.auth(a.removeShare))
 	mux.HandleFunc("GET /api/v1/folders", a.auth(a.localFolders))
 
+	mux.HandleFunc("GET /api/v1/apikeys", a.auth(a.sessionOnly(a.listKeys)))
+	mux.HandleFunc("POST /api/v1/apikeys", a.auth(a.sessionOnly(a.createKey)))
+	mux.HandleFunc("DELETE /api/v1/apikeys/{id}", a.auth(a.sessionOnly(a.revokeKey)))
+
 	mux.HandleFunc("GET /api/v1/hooks", a.auth(a.listHooks))
 	mux.HandleFunc("POST /api/v1/hooks/test", a.auth(a.testHooks))
 
@@ -131,7 +146,7 @@ func New(cfg Config, d Deps) http.Handler {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
 	mux.Handle("/", a.static())
-	return securityHeaders(mux)
+	return securityHeaders(mux), nil
 }
 
 func securityHeaders(next http.Handler) http.Handler {

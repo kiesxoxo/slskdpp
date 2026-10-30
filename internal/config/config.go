@@ -64,6 +64,9 @@ type Web struct {
 	Listen   string `yaml:"listen"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// APIKeys are accepted in X-API-Key or Authorization: Bearer headers,
+	// besides keys created in the web UI.
+	APIKeys []string `yaml:"api_keys"`
 }
 
 func Default() Config {
@@ -124,6 +127,9 @@ func applyEnv(cfg *Config) error {
 		if v, ok := os.LookupEnv(key); ok {
 			*dst = v
 		}
+	}
+	if v, ok := os.LookupEnv("SLSKDPP_API_KEY"); ok && v != "" {
+		cfg.Web.APIKeys = append(cfg.Web.APIKeys, v)
 	}
 	if v, ok := os.LookupEnv("SLSKDPP_LISTEN_PORT"); ok {
 		port, err := strconv.ParseUint(v, 10, 16)

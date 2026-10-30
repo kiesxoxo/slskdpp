@@ -230,7 +230,7 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	go uploads.Run(ctx)
 	respond = newResponder(c, index, uploads)
 
-	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Hooks: runner, Bus: bus}, log)
+	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Hooks: runner, Bus: bus, DB: db}, log)
 	if err != nil {
 		return err
 	}
@@ -250,13 +250,17 @@ func serveWeb(ctx context.Context, cfg config.Config, deps api.Deps, log *slog.L
 	if err != nil {
 		return nil, fmt.Errorf("session key: %w", err)
 	}
-	handler := api.New(api.Config{
+	handler, err := api.New(api.Config{
 		Username:   cfg.Web.Username,
 		Password:   password,
 		SessionKey: key,
+		APIKeys:    cfg.Web.APIKeys,
 		UI:         web.Dist(),
 		Logger:     log,
 	}, deps)
+	if err != nil {
+		return nil, err
+	}
 
 	ln, err := net.Listen("tcp", cfg.Web.Listen)
 	if err != nil {

@@ -15,6 +15,7 @@ web:
   listen: ":5030"     # web UI and API
   username: slskdpp
   password: ""        # empty: a random password is generated and logged at startup
+  api_keys: []        # for scripts (X-API-Key header); also SLSKDPP_API_KEY; more can be made in Settings
 
 transfers:
   max_attempts: 5               # tries per source before looking for another

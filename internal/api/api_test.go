@@ -116,8 +116,12 @@ func newEnv(t *testing.T) *env {
 		"index.html":    {Data: []byte("<!doctype html><title>app</title>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx,
-		Hooks: hooks.New(hooks.Config{OnDownload: "echo ok $SLSKDPP_EVENT"}), Bus: e.bus})
+	h, err := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui,
+		APIKeys: []string{"config-key-123"}}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx,
+		Hooks: hooks.New(hooks.Config{OnDownload: "echo ok $SLSKDPP_EVENT"}), Bus: e.bus, DB: db})
+	if err != nil {
+		t.Fatal(err)
+	}
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(e.srv.Close)
 	jar, _ := cookiejar.New(nil)
@@ -383,7 +387,7 @@ func TestStatic(t *testing.T) {
 		t.Errorf("unknown API path: %d %s", resp.StatusCode, b)
 	}
 
-	h := New(Config{}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Bus: e.bus})
+	h, _ := New(Config{}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Bus: e.bus})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
 	if rec.Code != 503 || !strings.Contains(rec.Body.String(), "not built") {
@@ -538,5 +542,71 @@ func TestHooksEndpoints(t *testing.T) {
 	}
 	if _, b := e.do(t, "POST", "/api/v1/hooks/test", nil); !strings.Contains(string(b), `"output":"ok test"`) || !strings.Contains(string(b), `"ok":true`) {
 		t.Errorf("test hooks: %s", b)
+	}
+}
+
+func TestAPIKeys(t *testing.T) {
+	e := newEnv(t)
+	withKey := func(method, path, key string, bearer bool) *http.Response {
+		req, _ := http.NewRequest(method, e.srv.URL+path, nil)
+		if bearer {
+			req.Header.Set("Authorization", "Bearer "+key)
+		} else {
+			req.Header.Set("X-API-Key", key)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	if resp := withKey("GET", "/api/v1/searches", "config-key-123", false); resp.StatusCode != 200 {
+		t.Errorf("config key: %d", resp.StatusCode)
+	}
+	if resp := withKey("GET", "/api/v1/searches", "nope", true); resp.StatusCode != 401 {
+		t.Errorf("bad key: %d", resp.StatusCode)
+	}
+
+	e.login(t)
+	resp, b := e.do(t, "POST", "/api/v1/apikeys", map[string]string{"name": "lidarr"})
+	if resp.StatusCode != 201 {
+		t.Fatalf("create: %d %s", resp.StatusCode, b)
+	}
+	var created struct {
+		ID     int64  `json:"id"`
+		Key    string `json:"key"`
+		Prefix string `json:"prefix"`
+	}
+	json.Unmarshal(b, &created)
+	if !strings.HasPrefix(created.Key, keyPrefix) || len(created.Key) < 50 || !strings.HasPrefix(created.Key, created.Prefix) {
+		t.Fatalf("created %+v", created)
+	}
+	for _, bearer := range []bool{false, true} {
+		if resp := withKey("GET", "/api/v1/downloads", created.Key, bearer); resp.StatusCode != 200 {
+			t.Errorf("new key (bearer %v): %d", bearer, resp.StatusCode)
+		}
+	}
+	// Keys work for writes without CSRF checks, but cannot manage keys.
+	if resp := withKey("POST", "/api/v1/downloads/clear", created.Key, false); resp.StatusCode != 200 {
+		t.Errorf("write with key: %d", resp.StatusCode)
+	}
+	if resp := withKey("GET", "/api/v1/apikeys", created.Key, false); resp.StatusCode != 403 {
+		t.Errorf("key listing keys: %d", resp.StatusCode)
+	}
+
+	_, b = e.do(t, "GET", "/api/v1/apikeys", nil)
+	if strings.Contains(string(b), created.Key) || !strings.Contains(string(b), `"name":"lidarr"`) || !strings.Contains(string(b), `"from_config":true`) || !strings.Contains(string(b), `"last_used"`) {
+		t.Errorf("list: %s", b)
+	}
+	if resp, _ := e.do(t, "DELETE", fmt.Sprintf("/api/v1/apikeys/%d", created.ID), nil); resp.StatusCode != 204 {
+		t.Errorf("revoke: %d", resp.StatusCode)
+	}
+	if resp := withKey("GET", "/api/v1/downloads", created.Key, false); resp.StatusCode != 401 {
+		t.Errorf("revoked key: %d", resp.StatusCode)
+	}
+	if resp, _ := e.do(t, "DELETE", "/api/v1/apikeys/-1", nil); resp.StatusCode != 404 {
+		t.Errorf("revoking a config key: %d", resp.StatusCode)
 	}
 }
