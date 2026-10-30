@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kiesxoxo/slskdpp/internal/app"
 	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
@@ -47,7 +48,7 @@ func newDebugClient(cfg client.ServerConfig, onPeer func(user string, m any) boo
 	var c *client.Client
 	c = client.New(cfg, client.Handlers{Peer: func(user string, m any) {
 		if onPeer == nil || !onPeer(user, m) {
-			newResponder(c, nil, nil).peer(user, m)
+			app.NewResponder(c, nil, nil).Peer(user, m)
 		}
 	}})
 	return c

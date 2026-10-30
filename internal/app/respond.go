@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"context"
@@ -16,29 +16,30 @@ import (
 // beyond it are dropped rather than queued.
 const maxSearchReplies = 32
 
-// responder answers what other users ask of us: searches, browsing,
+// Responder answers what other users ask of us: searches, browsing,
 // folder listings and user info. Without shares (the debug commands) it
 // only answers user info.
-type responder struct {
+type Responder struct {
 	c       *client.Client
 	shares  *shares.Index
 	uploads *transfers.Uploads
 	sem     chan struct{}
 }
 
-func newResponder(c *client.Client, idx *shares.Index, up *transfers.Uploads) *responder {
-	return &responder{c: c, shares: idx, uploads: up, sem: make(chan struct{}, maxSearchReplies)}
+// NewResponder answers for c from idx and up, either of which may be nil.
+func NewResponder(c *client.Client, idx *shares.Index, up *transfers.Uploads) *Responder {
+	return &Responder{c: c, shares: idx, uploads: up, sem: make(chan struct{}, maxSearchReplies)}
 }
 
-func (r *responder) status() transfers.UploadStatus {
+func (r *Responder) status() transfers.UploadStatus {
 	if r.uploads == nil {
 		return transfers.UploadStatus{}
 	}
 	return r.uploads.Status()
 }
 
-// search answers another user's search if anything we share matches.
-func (r *responder) search(s protocol.SearchRequest) {
+// Search answers another user's search if anything we share matches.
+func (r *Responder) Search(s protocol.SearchRequest) {
 	if r.shares == nil {
 		return
 	}
@@ -66,8 +67,8 @@ func (r *responder) search(s protocol.SearchRequest) {
 	}()
 }
 
-// peer answers requests that need no transfer.
-func (r *responder) peer(user string, m any) {
+// Peer answers requests that need no transfer.
+func (r *Responder) Peer(user string, m any) {
 	switch m := m.(type) {
 	case protocol.UserInfoRequest:
 		st := r.status()
@@ -103,7 +104,7 @@ func (r *responder) peer(user string, m any) {
 	}
 }
 
-func (r *responder) reply(user string, m protocol.PeerMessage) {
+func (r *Responder) reply(user string, m protocol.PeerMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	if err := r.c.SendPeer(ctx, user, m); err != nil {
