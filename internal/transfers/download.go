@@ -197,6 +197,26 @@ type Manager struct {
 	offline   map[string]time.Time // users seen offline, and since when
 	requests  int                  // QueueUpload requests in flight
 	nextAlt   time.Time            // earliest start for the next source search
+	// hints remember where a file from a remote folder was found again,
+	// keyed by old user and folder, so the folder's other files try the
+	// same place before searching.
+	hints map[string]sourceHint
+}
+
+type sourceHint struct{ user, folder string }
+
+func hintKey(user, remotePath string) string {
+	folder, _ := splitRemote(remotePath)
+	return user + "\x00" + folder
+}
+
+// splitRemote splits a remote path into folder and file name.
+func splitRemote(p string) (folder, name string) {
+	i := strings.LastIndexAny(p, `\/`)
+	if i < 0 {
+		return "", p
+	}
+	return p[:i], p[i+1:]
 }
 
 // New loads saved downloads. Ones that were in progress go back to the
@@ -230,6 +250,7 @@ func New(cfg Config, db *sql.DB, net Network, searcher Searcher) (*Manager, erro
 		ctx:       context.Background(),
 		downloads: make(map[int64]*Download),
 		offline:   make(map[string]time.Time),
+		hints:     make(map[string]sourceHint),
 	}
 	saved, err := loadDownloads(db)
 	if err != nil {
@@ -870,6 +891,13 @@ func (m *Manager) switchSourceLocked(d *Download) {
 		m.saveLocked(d)
 		return
 	}
+	tried := append(slices.Clone(d.Tried), d.Username)
+	if h, ok := m.hints[hintKey(d.Username, d.Filename)]; ok && !slices.Contains(tried, h.user) {
+		// A sibling was found at h: assume the rest of the folder is there.
+		_, name := splitRemote(d.Filename)
+		m.useSourceLocked(d, tried, h.user, h.folder+`\`+name, d.Size)
+		return
+	}
 	d.State = StateQueued
 	d.searching = true
 	m.saveLocked(d)
@@ -878,7 +906,6 @@ func (m *Manager) switchSourceLocked(d *Download) {
 		start = m.nextAlt
 	}
 	m.nextAlt = start.Add(m.t.altGap)
-	tried := append(slices.Clone(d.Tried), d.Username)
 	go m.findSource(m.ctx, d.ID, d.Filename, d.Size, tried, time.Until(start))
 }
 
@@ -933,22 +960,31 @@ func (m *Manager) findSource(ctx context.Context, id int64, filename string, siz
 		m.saveLocked(d)
 		return
 	}
-	part := m.partPath(d)
-	m.log.Info("switching download source", "file", name, "from", d.Username, "to", pickUser)
-	// Another user's copy may differ byte for byte, so start over.
-	os.Remove(part)
-	d.Tried = tried
-	d.Username = pickUser
-	d.Filename = pick.Path
+	newFolder, _ := splitRemote(pick.Path)
+	m.hints[hintKey(d.Username, d.Filename)] = sourceHint{pickUser, newFolder}
+	size = d.Size
 	if pick.Size > 0 {
-		d.Size = pick.Size
+		size = pick.Size
 	}
+	m.useSourceLocked(d, tried, pickUser, pick.Path, size)
+}
+
+// useSourceLocked switches d to another user's copy and starts over.
+func (m *Manager) useSourceLocked(d *Download, tried []string, user, filename string, size uint64) {
+	m.log.Info("switching download source", "file", path.Base(d.Dest), "from", d.Username, "to", user)
+	// Another user's copy may differ byte for byte, so start over.
+	os.Remove(m.partPath(d))
+	d.Tried = tried
+	d.Username = user
+	d.Filename = filename
+	d.Size = size
+	d.State = StateQueued
 	d.Bytes = 0
 	d.Attempts = 0
 	d.Error = ""
 	d.NextAttempt = time.Now()
 	m.saveLocked(d)
-	go m.net.WatchUser(pickUser)
+	go m.net.WatchUser(user)
 	m.wake()
 }
 

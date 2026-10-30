@@ -413,3 +413,38 @@ func TestCancelDuringTransfer(t *testing.T) {
 		t.Errorf("Clear removed %d, %d left", n, len(e.m.List()))
 	}
 }
+
+func TestFolderFailoverReusesSource(t *testing.T) {
+	e := newEnv(t)
+	second := `@@bob\Music\Artist\Album\02 - Other.flac`
+	views, _ := e.m.Enqueue("bob", []FileRequest{{Path: remote, Size: 5000}, {Path: second, Size: 7000}}, "")
+	// Requests go out concurrently, in either order.
+	got := map[string]bool{}
+	for range 2 {
+		select {
+		case m := <-e.net.sent:
+			got[m.msg.(protocol.QueueUpload).Filename] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("files not requested")
+		}
+	}
+	if !got[remote] || !got[second] {
+		t.Fatalf("requested %v", got)
+	}
+	e.waitState(views[0].ID, StateRemoteQueued)
+	e.waitState(views[1].ID, StateRemoteQueued)
+
+	e.m.HandlePeer("bob", protocol.UploadDenied{Filename: remote, Reason: "Banned"})
+	<-e.snet.queries
+	e.search.HandleResponse("carol", protocol.FileSearchResponse{Token: e.snet.token.Load(), Files: []protocol.File{{Name: `@@carol\Album\01 - Song.flac`, Size: 5000}}})
+	e.expect("carol", protocol.QueueUpload{Filename: `@@carol\Album\01 - Song.flac`})
+
+	// The sibling goes straight to carol's copy of the folder, no search.
+	e.m.HandlePeer("bob", protocol.UploadDenied{Filename: second, Reason: "Banned"})
+	e.expect("carol", protocol.QueueUpload{Filename: `@@carol\Album\02 - Other.flac`})
+	select {
+	case q := <-e.snet.queries:
+		t.Errorf("searched again: %q", q)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
