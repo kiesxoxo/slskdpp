@@ -756,6 +756,14 @@ func (m *Manager) schedule() {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids) // oldest first
+	// One request per user at a time keeps a folder in order in the
+	// peer's queue; they share one connection, so this costs little.
+	requesting := map[string]bool{}
+	for _, d := range m.downloads {
+		if d.inflight {
+			requesting[d.Username] = true
+		}
+	}
 	for _, id := range ids {
 		d := m.downloads[id]
 		if d.searching {
@@ -771,9 +779,10 @@ func (m *Manager) schedule() {
 				}
 				continue
 			}
-			if now.Before(d.NextAttempt) || !loggedIn || m.requests >= m.t.requestLimit {
+			if now.Before(d.NextAttempt) || !loggedIn || m.requests >= m.t.requestLimit || requesting[d.Username] {
 				continue
 			}
+			requesting[d.Username] = true
 			d.State = StateRequested
 			d.inflight = true
 			m.requests++

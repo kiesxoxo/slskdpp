@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Download, type ServerState } from './lib/api';
+  import { api, type Download, type ServerState, type Upload } from './lib/api';
   import { downloads, isActive, loadDownloads, removeDownload, updateDownload } from './lib/downloads.svelte';
+  import { isUploading, loadUploads, uploads } from './lib/uploads.svelte';
   import { subscribe } from './lib/events';
   import { route, href } from './lib/router.svelte';
   import { session } from './lib/session.svelte';
@@ -9,6 +10,8 @@
   import Search from './routes/Search.svelte';
   import Browse from './routes/Browse.svelte';
   import Downloads from './routes/Downloads.svelte';
+  import Uploads from './routes/Uploads.svelte';
+  import Shares from './routes/Shares.svelte';
 
   onMount(async () => {
     try {
@@ -23,7 +26,11 @@
   // downloads stay live on every page.
   $effect(() => {
     if (!session.user) return;
-    loadDownloads();
+    const loadAll = () => {
+      loadDownloads();
+      loadUploads();
+    };
+    loadAll();
     return subscribe(
       0,
       {
@@ -33,19 +40,22 @@
         },
         download: (d: Download) => updateDownload(d),
         'download.removed': (e: { id: number }) => removeDownload(e.id),
+        upload: (u: Upload) => uploads.set(u.id, u),
+        'upload.removed': (e: { id: number }) => uploads.delete(e.id),
       },
-      loadDownloads,
+      loadAll,
     );
   });
 
   let activeDownloads = $derived([...downloads.values()].filter(isActive).length);
+  let activeUploads = $derived([...uploads.values()].filter(isUploading).length);
 
   async function logout() {
     await api.logout().catch(() => {});
     session.user = null;
   }
 
-  let page = $derived(['browse', 'downloads'].includes(route.path[0]) ? route.path[0] : 'search');
+  let page = $derived(['browse', 'downloads', 'uploads', 'shares'].includes(route.path[0]) ? route.path[0] : 'search');
 </script>
 
 {#if !session.checked}
@@ -62,6 +72,10 @@
         <a href={href(['downloads'])} class:active={page === 'downloads'}>
           Downloads{#if activeDownloads}<span class="count">{activeDownloads}</span>{/if}
         </a>
+        <a href={href(['uploads'])} class:active={page === 'uploads'}>
+          Uploads{#if activeUploads}<span class="count">{activeUploads}</span>{/if}
+        </a>
+        <a href={href(['shares'])} class:active={page === 'shares'}>Shares</a>
       </nav>
       <span class="status" title={session.connected ? 'Connected to the Soulseek server' : 'Not connected to the Soulseek server'}>
         <span class="dot" class:good={session.connected} class:bad={!session.connected}></span>
@@ -72,6 +86,10 @@
     <main>
       {#if page === 'downloads'}
         <Downloads />
+      {:else if page === 'uploads'}
+        <Uploads />
+      {:else if page === 'shares'}
+        <Shares />
       {:else if page === 'browse'}
         {#key route.path[1]}
           <Browse user={route.path[1] ?? ''} folder={route.query.get('folder') ?? ''} />
@@ -114,6 +132,12 @@
     display: flex;
     gap: 4px;
     flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  nav a {
+    white-space: nowrap;
   }
   nav a {
     color: var(--muted);
@@ -152,8 +176,19 @@
   }
   @media (max-width: 600px) {
     header {
-      gap: 8px;
+      flex-wrap: wrap;
+      gap: 4px 8px;
       padding: 8px;
+    }
+    .status {
+      margin-left: auto;
+    }
+    nav {
+      order: 2;
+      flex-basis: 100%;
+    }
+    nav a {
+      padding: 6px 8px;
     }
     .brand,
     .status .ellipsis {

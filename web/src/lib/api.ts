@@ -92,6 +92,56 @@ export interface FileRequest {
   size: number;
 }
 
+export type UploadState = 'queued' | 'initializing' | 'transferring' | 'completed' | 'failed' | 'cancelled';
+
+export interface Upload {
+  id: number;
+  username: string;
+  filename: string;
+  name: string;
+  folder: string;
+  size: number;
+  bytes: number;
+  state: UploadState;
+  error?: string;
+  place?: number;
+  speed: number;
+  created: string;
+  started?: string;
+  completed?: string;
+}
+
+export interface UploadStatus {
+  slots: number;
+  active: number;
+  queued: number;
+  slot_free: boolean;
+  avg_speed: number;
+}
+
+export interface ShareStats {
+  folders: number;
+  files: number;
+  bytes: number;
+  scanning: boolean;
+  last_scan?: string;
+}
+
+export interface ShareRoot {
+  alias: string;
+  path: string;
+  from_config: boolean;
+  folders: number;
+  files: number;
+  bytes: number;
+}
+
+export interface LocalFolders {
+  path: string;
+  parent: string;
+  folders: string[];
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -146,6 +196,17 @@ export const api = {
   retryDownload: (id: number) => request<void>('POST', `/downloads/${id}/retry`),
   removeDownload: (id: number) => request<void>('DELETE', `/downloads/${id}`),
   clearDownloads: (states: DownloadState[]) => request<{ removed: number }>('POST', '/downloads/clear', { states }),
+
+  uploads: () => request<{ status: UploadStatus; uploads: Upload[] }>('GET', '/uploads'),
+  cancelUpload: (id: number) => request<void>('POST', `/uploads/${id}/cancel`),
+  removeUpload: (id: number) => request<void>('DELETE', `/uploads/${id}`),
+  clearUploads: () => request<{ removed: number }>('POST', '/uploads/clear'),
+
+  shares: () => request<{ stats: ShareStats; roots: ShareRoot[] }>('GET', '/shares'),
+  addShare: (path: string, alias: string) => request<ShareRoot>('POST', '/shares', { path, alias }),
+  removeShare: (alias: string) => request<void>('DELETE', '/shares/' + encodeURIComponent(alias)),
+  rescanShares: () => request<void>('POST', '/shares/rescan'),
+  localFolders: (path: string) => request<LocalFolders>('GET', '/folders?path=' + encodeURIComponent(path)),
 };
 
 export function errorText(e: unknown): string {

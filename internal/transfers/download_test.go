@@ -422,19 +422,10 @@ func TestFolderFailoverReusesSource(t *testing.T) {
 	e := newEnv(t)
 	second := `@@bob\Music\Artist\Album\02 - Other.flac`
 	views, _ := e.m.Enqueue("bob", []FileRequest{{Path: remote, Size: 5000}, {Path: second, Size: 7000}}, "")
-	// Requests go out concurrently, in either order.
+	// Files from one user are requested one at a time, in order.
+	e.expect("bob", protocol.QueueUpload{Filename: remote})
+	e.expect("bob", protocol.QueueUpload{Filename: second})
 	got := map[string]bool{}
-	for range 2 {
-		select {
-		case m := <-e.net.sent:
-			got[m.msg.(protocol.QueueUpload).Filename] = true
-		case <-time.After(5 * time.Second):
-			t.Fatal("files not requested")
-		}
-	}
-	if !got[remote] || !got[second] {
-		t.Fatalf("requested %v", got)
-	}
 	e.waitState(views[0].ID, StateRemoteQueued)
 	e.waitState(views[1].ID, StateRemoteQueued)
 
