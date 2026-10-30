@@ -25,6 +25,10 @@ type Handlers struct {
 	Peer func(username string, m any)
 	// State is told when the server session starts or ends.
 	State func(loggedIn bool)
+	// Search receives other users' searches, whether the server sent them
+	// directly, embedded, or through our distributed parent. It must not
+	// block.
+	Search func(protocol.SearchRequest)
 	// File takes over an incoming file connection for the transfer with
 	// the given token, and must close it. It runs on its own goroutine.
 	// Without it file connections are refused.
@@ -37,9 +41,11 @@ type Handlers struct {
 type Client struct {
 	srv      *Server
 	peers    *Peers
+	distrib  *distrib
 	h        Handlers
 	username string
 	tokens   atomic.Uint32
+	shared   atomic.Uint64 // folders<<32 | files, as announced to the server
 
 	mu      sync.Mutex
 	waiters map[waitKey][]chan any
@@ -62,11 +68,18 @@ func New(cfg ServerConfig, h Handlers) *Client {
 	if h.Peer == nil {
 		h.Peer = func(string, any) {}
 	}
+	if h.State == nil {
+		h.State = func(bool) {}
+	}
+	if h.Search == nil {
+		h.Search = func(protocol.SearchRequest) {}
+	}
 	c := &Client{h: h, waiters: make(map[waitKey][]chan any)}
 	c.tokens.Store(rand.Uint32N(1 << 30))
 	c.srv = NewServer(cfg, c.onServer)
-	c.srv.onState = h.State
+	c.srv.onState = c.onState
 	c.username = cfg.Username
+	c.distrib = newDistrib(c, cfg.Logger)
 	c.peers = newPeers(cfg.Username, cfg.ListenPort, cfg.Logger, c.srv, c.NewToken, c.onPeer, h.File)
 	return c
 }
@@ -78,6 +91,7 @@ func (c *Client) Run(ctx context.Context) error {
 	if err := c.peers.Listen(ctx); err != nil {
 		return err
 	}
+	go c.distrib.stop(ctx)
 	return c.srv.Run(ctx)
 }
 
@@ -88,6 +102,28 @@ func (c *Client) Username() string { return c.username }
 
 // LoggedIn reports whether the server session is up.
 func (c *Client) LoggedIn() bool { return c.srv.LoggedIn() }
+
+// DistribParent is the user we receive distributed searches from, if any.
+func (c *Client) DistribParent() string { return c.distrib.Parent() }
+
+// SetShared tells the server how much we share, now and after each login.
+func (c *Client) SetShared(folders, files uint32) {
+	c.shared.Store(uint64(folders)<<32 | uint64(files))
+	if c.srv.LoggedIn() {
+		c.srv.Send(protocol.SharedFoldersFiles{Folders: folders, Files: files})
+	}
+}
+
+func (c *Client) onState(loggedIn bool) {
+	if loggedIn {
+		v := c.shared.Load()
+		c.srv.Send(protocol.SharedFoldersFiles{Folders: uint32(v >> 32), Files: uint32(v)})
+		c.distrib.loggedIn()
+	} else {
+		c.distrib.drop()
+	}
+	c.h.State(loggedIn)
+}
 
 func (c *Client) Peers() *Peers { return c.peers }
 
@@ -177,7 +213,14 @@ func (c *Client) request(ctx context.Context, username string, req protocol.Peer
 }
 
 func (c *Client) onServer(m any) {
+	if s, ok := m.(protocol.SearchRequest); ok {
+		if s.Username != c.username {
+			c.h.Search(s)
+		}
+		return
+	}
 	c.peers.handleServer(m)
+	c.distrib.handleServer(m)
 	c.h.Server(m)
 }
 

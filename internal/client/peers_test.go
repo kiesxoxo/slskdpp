@@ -25,6 +25,14 @@ type hub struct {
 	// user, e.g. a closed one to force an indirect connection.
 	addrOverride map[string]uint32
 	forwarded    int // ConnectToPeer requests passed on
+	// seen, if set, receives every message the hub gets from a client.
+	seen chan hubMsg
+}
+
+type hubMsg struct {
+	user string
+	code uint32
+	body []byte // payload after the code
 }
 
 type hubUser struct {
@@ -78,7 +86,14 @@ func (h *hub) serve(c net.Conn) {
 			return
 		}
 		r := protocol.NewReader(body)
-		switch r.Uint32() {
+		code := r.Uint32()
+		h.mu.Lock()
+		seen := h.seen
+		h.mu.Unlock()
+		if seen != nil {
+			seen <- hubMsg{name, code, body[4:]}
+		}
+		switch code {
 		case protocol.CodeSetWaitPort:
 			h.mu.Lock()
 			me.port = r.Uint32()
@@ -304,11 +319,7 @@ func TestSearchRoundTrip(t *testing.T) {
 	h := newHub(t)
 
 	var bob *Client
-	bob = startClient(t, ctx, h, "bob", Handlers{Server: func(m any) {
-		req, ok := m.(protocol.SearchRequest)
-		if !ok {
-			return
-		}
+	bob = startClient(t, ctx, h, "bob", Handlers{Search: func(req protocol.SearchRequest) {
 		resp := protocol.FileSearchResponse{Username: "bob", Token: req.Token, Files: share[0].Files, SlotFree: true, AvgSpeed: 1 << 20}
 		go bob.SendPeer(context.Background(), req.Username, resp)
 	}})
