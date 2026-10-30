@@ -150,7 +150,23 @@ type Config struct {
 	OnUpdate func(View)
 	// OnRemove is told when a download is removed. Same rules as OnUpdate.
 	OnRemove func(id int64)
-	Logger   *slog.Logger
+	// OnComplete is told when a file has been downloaded and moved into
+	// place, with its local path. Same rules as OnUpdate.
+	OnComplete func(v View, local string)
+	// OnFolderComplete is told when nothing is left to do in a folder
+	// (the first part of the path under DownloadDir) after a file in it
+	// completes. Same rules as OnUpdate.
+	OnFolderComplete func(FolderDone)
+	Logger           *slog.Logger
+}
+
+// FolderDone sums up a folder whose downloads have all finished.
+type FolderDone struct {
+	Path      string // local folder
+	Users     []string
+	Completed int
+	Failed    int // failed or cancelled
+	Bytes     uint64
 }
 
 // timing holds the manager's delays, shortened in tests.
@@ -235,6 +251,12 @@ func New(cfg Config, db *sql.DB, net Network, searcher Searcher) (*Manager, erro
 	}
 	if cfg.OnRemove == nil {
 		cfg.OnRemove = func(int64) {}
+	}
+	if cfg.OnComplete == nil {
+		cfg.OnComplete = func(View, string) {}
+	}
+	if cfg.OnFolderComplete == nil {
+		cfg.OnFolderComplete = func(FolderDone) {}
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -741,7 +763,44 @@ func (m *Manager) finishLocked(d *Download, part string) error {
 	d.Error = ""
 	d.Completed = time.Now()
 	m.saveLocked(d)
+	m.cfg.OnComplete(d.view(), final)
+	m.folderDoneLocked(d)
 	return nil
+}
+
+// topFolder is the first part of a download's path, the folder it was
+// downloaded into.
+func topFolder(dest string) string {
+	top, _, _ := strings.Cut(dest, "/")
+	return top
+}
+
+// folderDoneLocked reports d's folder if nothing in it is left to do.
+func (m *Manager) folderDoneLocked(d *Download) {
+	top := topFolder(d.Dest)
+	if top == d.Dest {
+		return // a file directly in the downloads directory
+	}
+	fd := FolderDone{Path: filepath.Join(m.cfg.DownloadDir, top)}
+	for _, o := range m.downloads {
+		if topFolder(o.Dest) != top {
+			continue
+		}
+		switch o.State {
+		case StateCompleted:
+			fd.Completed++
+			fd.Bytes += o.Size
+		case StateFailed, StateCancelled:
+			fd.Failed++
+		default:
+			return // still going
+		}
+		if !slices.Contains(fd.Users, o.Username) {
+			fd.Users = append(fd.Users, o.Username)
+		}
+	}
+	slices.Sort(fd.Users)
+	m.cfg.OnFolderComplete(fd)
 }
 
 // schedule starts what is due: requests to peers, queue place checks,

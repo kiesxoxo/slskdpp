@@ -25,6 +25,15 @@ transfers:
   max_queued_per_user: 500      # files one user may queue from us
   upload_speed_limit: 0         # KiB/s, 0 = unlimited
 
+# Run something when downloads finish. Commands run with sh -c and get
+# SLSKDPP_EVENT, SLSKDPP_PATH, SLSKDPP_FOLDER, SLSKDPP_USERNAME,
+# SLSKDPP_REMOTE_PATH, SLSKDPP_SIZE, SLSKDPP_FILES and SLSKDPP_FAILED.
+# The webhook gets the same details as a JSON POST.
+hooks:
+  on_download: ""   # e.g. beet import -q "$SLSKDPP_PATH"
+  on_folder: ""
+  webhook: ""
+
 # Folders to share, as "/path" (shared under the folder's name) or
 # "Alias=/path". More can be added from the web UI.
 shares: []

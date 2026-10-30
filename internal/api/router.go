@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kiesxoxo/slskdpp/internal/events"
+	"github.com/kiesxoxo/slskdpp/internal/hooks"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
 	"github.com/kiesxoxo/slskdpp/internal/shares"
@@ -48,6 +49,7 @@ type Deps struct {
 	Downloads *transfers.Manager
 	Uploads   *transfers.Uploads
 	Shares    *shares.Index
+	Hooks     *hooks.Runner
 	Bus       *events.Bus
 }
 
@@ -59,6 +61,7 @@ type API struct {
 	downloads *transfers.Manager
 	uploads   *transfers.Uploads
 	shares    *shares.Index
+	hooks     *hooks.Runner
 	bus       *events.Bus
 	limiter   *loginLimiter
 	now       func() time.Time
@@ -78,6 +81,7 @@ func New(cfg Config, d Deps) http.Handler {
 		downloads: d.Downloads,
 		uploads:   d.Uploads,
 		shares:    d.Shares,
+		hooks:     d.Hooks,
 		bus:       d.Bus,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
@@ -119,6 +123,9 @@ func New(cfg Config, d Deps) http.Handler {
 	mux.HandleFunc("POST /api/v1/shares/rescan", a.auth(a.rescanShares))
 	mux.HandleFunc("DELETE /api/v1/shares/{alias}", a.auth(a.removeShare))
 	mux.HandleFunc("GET /api/v1/folders", a.auth(a.localFolders))
+
+	mux.HandleFunc("GET /api/v1/hooks", a.auth(a.listHooks))
+	mux.HandleFunc("POST /api/v1/hooks/test", a.auth(a.testHooks))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")

@@ -21,6 +21,7 @@ import (
 
 	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/events"
+	"github.com/kiesxoxo/slskdpp/internal/hooks"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
 	"github.com/kiesxoxo/slskdpp/internal/shares"
@@ -115,7 +116,8 @@ func newEnv(t *testing.T) *env {
 		"index.html":    {Data: []byte("<!doctype html><title>app</title>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx, Bus: e.bus})
+	h := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx,
+		Hooks: hooks.New(hooks.Config{OnDownload: "echo ok $SLSKDPP_EVENT"}), Bus: e.bus})
 	e.srv = httptest.NewServer(h)
 	t.Cleanup(e.srv.Close)
 	jar, _ := cookiejar.New(nil)
@@ -525,5 +527,16 @@ func TestUploadsEndpoint(t *testing.T) {
 	}
 	if resp, b := e.do(t, "POST", "/api/v1/uploads/clear", nil); !strings.Contains(string(b), `"removed":1`) {
 		t.Errorf("clear: %d %s", resp.StatusCode, b)
+	}
+}
+
+func TestHooksEndpoints(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	if _, b := e.do(t, "GET", "/api/v1/hooks", nil); !strings.Contains(string(b), `"on_download":"echo ok $SLSKDPP_EVENT"`) {
+		t.Errorf("hooks: %s", b)
+	}
+	if _, b := e.do(t, "POST", "/api/v1/hooks/test", nil); !strings.Contains(string(b), `"output":"ok test"`) || !strings.Contains(string(b), `"ok":true`) {
+		t.Errorf("test hooks: %s", b)
 	}
 }

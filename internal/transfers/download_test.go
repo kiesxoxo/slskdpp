@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -467,4 +468,43 @@ func TestFolderFailoverReusesSource(t *testing.T) {
 	e.waitState(views[0].ID, StateRemoteQueued)
 	e.m.HandlePeer("bob", protocol.UploadDenied{Filename: third, Reason: "Banned"})
 	e.expect("carol", protocol.QueueUpload{Filename: `@@carol\Album\03 - Late.flac`})
+}
+
+func TestCompletionEvents(t *testing.T) {
+	e := newEnv(t)
+	files := make(chan string, 10)
+	folders := make(chan FolderDone, 10)
+	e.m.mu.Lock()
+	e.m.cfg.OnComplete = func(v View, local string) { files <- local }
+	e.m.cfg.OnFolderComplete = func(f FolderDone) { folders <- f }
+	e.m.mu.Unlock()
+
+	second := `@@bob\Music\Artist\Album\02 - Other.flac`
+	data := payload(1024)
+	views, _ := e.m.Enqueue("bob", []FileRequest{{Path: remote, Size: 1024}, {Path: second, Size: 1024}}, `@@bob\Music\Artist\Album`)
+	for i, f := range []string{remote, second} {
+		e.expect("bob", protocol.QueueUpload{Filename: f})
+		e.waitState(views[i].ID, StateRemoteQueued)
+	}
+	for i, f := range []string{remote, second} {
+		token := uint32(20 + i)
+		e.m.HandlePeer("bob", protocol.TransferRequest{Direction: protocol.TransferUpload, Token: token, Filename: f, Size: 1024})
+		e.expect("bob", protocol.TransferResponse{Token: token, Allowed: true})
+		e.waitState(views[i].ID, StateInitializing)
+		e.upload("bob", token, data, -1)
+		if got := <-files; got != filepath.Join(e.dir, "downloads", "Album", path.Base(strings.ReplaceAll(f, `\`, "/"))) {
+			t.Errorf("completed file at %s", got)
+		}
+		if i == 0 {
+			select {
+			case f := <-folders:
+				t.Fatalf("folder reported done early: %+v", f)
+			default:
+			}
+		}
+	}
+	f := <-folders
+	if f.Path != filepath.Join(e.dir, "downloads", "Album") || f.Completed != 2 || f.Failed != 0 || f.Bytes != 2048 || len(f.Users) != 1 {
+		t.Errorf("folder event %+v", f)
+	}
 }

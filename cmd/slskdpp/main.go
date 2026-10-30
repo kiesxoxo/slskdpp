@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/config"
 	"github.com/kiesxoxo/slskdpp/internal/events"
+	"github.com/kiesxoxo/slskdpp/internal/hooks"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
 	"github.com/kiesxoxo/slskdpp/internal/shares"
@@ -158,6 +160,12 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 		},
 	})
 
+	runner := hooks.New(hooks.Config{
+		OnDownload: cfg.Hooks.OnDownload,
+		OnFolder:   cfg.Hooks.OnFolder,
+		Webhook:    cfg.Hooks.Webhook,
+		Logger:     log,
+	})
 	downloads, err = transfers.New(transfers.Config{
 		DownloadDir:      cfg.Directories.Downloads,
 		IncompleteDir:    cfg.Directories.Incomplete,
@@ -170,6 +178,14 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 		},
 		OnRemove: func(id int64) {
 			bus.Publish(events.Event{Type: events.TypeDownloadRemoved, Data: events.DownloadRemoved{ID: id}})
+		},
+		OnComplete: func(v transfers.View, local string) {
+			runner.Fire(hooks.Event{Event: hooks.DownloadCompleted, Path: local, Folder: filepath.Dir(local),
+				Username: v.Username, Filename: v.Filename, Size: v.Size})
+		},
+		OnFolderComplete: func(f transfers.FolderDone) {
+			runner.Fire(hooks.Event{Event: hooks.FolderCompleted, Path: f.Path, Folder: f.Path,
+				Username: strings.Join(f.Users, ","), Size: f.Bytes, Files: f.Completed, Failed: f.Failed})
 		},
 		Logger: log,
 	}, db, c, searches)
@@ -214,7 +230,7 @@ func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfi
 	go uploads.Run(ctx)
 	respond = newResponder(c, index, uploads)
 
-	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Bus: bus}, log)
+	stopWeb, err := serveWeb(ctx, cfg, api.Deps{Net: c, Searches: searches, Downloads: downloads, Uploads: uploads, Shares: index, Hooks: runner, Bus: bus}, log)
 	if err != nil {
 		return err
 	}

@@ -17,6 +17,7 @@ type Config struct {
 	Directories Directories `yaml:"directories"`
 	Web         Web         `yaml:"web"`
 	Transfers   Transfers   `yaml:"transfers"`
+	Hooks       Hooks       `yaml:"hooks"`
 	Shares      []string    `yaml:"shares"`
 	LogLevel    string      `yaml:"log_level"`
 }
@@ -47,6 +48,16 @@ type Transfers struct {
 	UploadSlots int `yaml:"upload_slots"`
 	// MaxQueuedPerUser caps how many files one user may queue from us.
 	MaxQueuedPerUser int `yaml:"max_queued_per_user"`
+}
+
+// Hooks tell other programs about finished downloads.
+type Hooks struct {
+	// OnDownload and OnFolder are shell commands run after each file and
+	// after each folder; details are in SLSKDPP_* environment variables.
+	OnDownload string `yaml:"on_download"`
+	OnFolder   string `yaml:"on_folder"`
+	// Webhook receives the same events as JSON POSTs.
+	Webhook string `yaml:"webhook"`
 }
 
 type Web struct {
