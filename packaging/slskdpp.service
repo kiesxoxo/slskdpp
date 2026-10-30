@@ -1,0 +1,48 @@
+# systemd unit for slskdpp.
+#
+#   sudo useradd --system --home /var/lib/slskdpp --shell /usr/sbin/nologin slskdpp
+#   sudo install -m 755 bin/slskdpp /usr/local/bin/slskdpp
+#   sudo install -d -m 750 -o root -g slskdpp /etc/slskdpp
+#   sudo install -m 640 -g slskdpp slskdpp.example.yaml /etc/slskdpp/slskdpp.yaml   # then edit it
+#   sudo install -m 644 packaging/slskdpp.service /etc/systemd/system/
+#   sudo systemctl enable --now slskdpp
+#
+# State, downloads and partial files go to /var/lib/slskdpp. The unit
+# can read the whole file system (to share music) but write only there;
+# add ReadWritePaths= (e.g. with systemctl edit slskdpp) for downloads
+# kept elsewhere.
+
+[Unit]
+Description=slskdpp Soulseek client
+Documentation=https://github.com/kiesxoxo/slskdpp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=slskdpp
+Group=slskdpp
+ExecStart=/usr/local/bin/slskdpp -config /etc/slskdpp/slskdpp.yaml
+Environment=SLSKDPP_DATA_DIR=/var/lib/slskdpp
+StateDirectory=slskdpp
+WorkingDirectory=/var/lib/slskdpp
+# A rejected login exits with an error; do not hammer the server.
+Restart=on-failure
+RestartSec=30
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
