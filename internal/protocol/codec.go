@@ -147,12 +147,28 @@ func ReadFrame(rd io.Reader, max uint32) ([]byte, error) {
 	if n > max {
 		return nil, fmt.Errorf("protocol: frame of %d bytes exceeds limit %d", n, max)
 	}
-	body := make([]byte, n)
-	if _, err := io.ReadFull(rd, body); err != nil {
+	if n <= eagerFrame {
+		body := make([]byte, n)
+		if _, err := io.ReadFull(rd, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+	// Grow large frames as data arrives so a peer cannot make us allocate
+	// a huge buffer just by announcing one.
+	var buf bytes.Buffer
+	buf.Grow(eagerFrame)
+	if _, err := io.CopyN(&buf, rd, int64(n)); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
-	return body, nil
+	return buf.Bytes(), nil
 }
+
+// eagerFrame is the largest frame ReadFrame allocates up front.
+const eagerFrame = 1 << 20
 
 // Frame prefixes body with its length.
 func Frame(body []byte) []byte {

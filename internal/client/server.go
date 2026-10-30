@@ -67,7 +67,8 @@ type Server struct {
 	handler func(any)
 
 	mu     sync.Mutex
-	sendCh chan []byte // nil while logged out
+	sendCh chan []byte   // nil while logged out
+	ready  chan struct{} // closed while logged in
 	login  protocol.LoginResponse
 }
 
@@ -82,7 +83,12 @@ func NewServer(cfg ServerConfig, handler func(any)) *Server {
 	if handler == nil {
 		handler = func(any) {}
 	}
-	return &Server{cfg: cfg, log: log.With("component", "server"), handler: handler}
+	return &Server{
+		cfg:     cfg,
+		log:     log.With("component", "server"),
+		handler: handler,
+		ready:   make(chan struct{}),
+	}
 }
 
 // Run keeps a logged-in session alive until ctx is cancelled or the server
@@ -118,6 +124,19 @@ func (s *Server) LoggedIn() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sendCh != nil
+}
+
+// WaitLoggedIn blocks until a session is established or ctx is done.
+func (s *Server) WaitLoggedIn(ctx context.Context) error {
+	s.mu.Lock()
+	ready := s.ready
+	s.mu.Unlock()
+	select {
+	case <-ready:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Login returns the response from the most recent successful login.
@@ -169,10 +188,12 @@ func (s *Server) session(ctx context.Context) error {
 	s.mu.Lock()
 	s.sendCh = sendCh
 	s.login = resp
+	close(s.ready)
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
 		s.sendCh = nil
+		s.ready = make(chan struct{})
 		s.mu.Unlock()
 	}()
 

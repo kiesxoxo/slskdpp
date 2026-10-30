@@ -17,9 +17,25 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 )
 
+const usage = `usage: slskdpp [flags] [command]
+
+With no command, slskdpp runs as a daemon.
+
+Debug commands:
+  search [flags] <query>     search the network and print ranked albums
+  browse [flags] <user>      list a user's shared folders
+  folder <user> <folder>     list the files in one of a user's folders
+
+Flags:
+`
+
 func main() {
 	configPath := flag.String("config", "slskdpp.yaml", "path to config file")
 	checkLogin := flag.Bool("check-login", false, "log in once, print the result and exit")
+	flag.Usage = func() {
+		fmt.Fprint(flag.CommandLine.Output(), usage)
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -55,16 +71,46 @@ func main() {
 		return
 	}
 
-	srv := client.NewServer(srvCfg, func(m any) {
-		switch m := m.(type) {
-		case protocol.AdminMessage:
-			log.Info("admin message", "text", m.Text)
-		default:
-			log.Debug("server message", "type", fmt.Sprintf("%T", m))
+	if args := flag.Args(); len(args) > 0 {
+		cmd, ok := commands[args[0]]
+		if !ok {
+			flag.Usage()
+			os.Exit(2)
 		}
+		if err := cmd(ctx, srvCfg, args[1:]); err != nil {
+			fatal(err)
+		}
+		return
+	}
+
+	var c *client.Client
+	c = client.New(srvCfg, client.Handlers{
+		Server: func(m any) {
+			switch m := m.(type) {
+			case protocol.AdminMessage:
+				log.Info("admin message", "text", m.Text)
+			default:
+				log.Debug("server message", "type", fmt.Sprintf("%T", m))
+			}
+		},
+		Peer: func(user string, m any) { answerPeer(c, user, m) },
 	})
-	if err := srv.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fatal(err)
+	}
+}
+
+// answerPeer handles the peer requests every mode answers the same way.
+func answerPeer(c *client.Client, user string, m any) {
+	switch m.(type) {
+	case protocol.UserInfoRequest:
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			c.SendPeer(ctx, user, protocol.UserInfoResponse{Description: "slskdpp"})
+		}()
+	default:
+		slog.Debug("peer message", "user", user, "type", fmt.Sprintf("%T", m))
 	}
 }
 
