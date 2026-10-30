@@ -3,6 +3,7 @@ module github.com/kiesxoxo/slskdpp
 go 1.26.8
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.0
 )
