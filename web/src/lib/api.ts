@@ -1,0 +1,107 @@
+import { session } from './session.svelte';
+
+export interface FileInfo {
+  path: string;
+  name: string;
+  size: number;
+  ext: string;
+  bitrate?: number;
+  duration?: number;
+  sample_rate?: number;
+  bit_depth?: number;
+  vbr?: boolean;
+}
+
+export interface Hit {
+  user: string;
+  folder: string;
+  name: string;
+  files: FileInfo[];
+  file_count: number;
+  formats: string[];
+  avg_bitrate?: number;
+  lossless: boolean;
+  total_size: number;
+  slot_free: boolean;
+  queue_length: number;
+  upload_speed: number;
+  score: number;
+  album_key: string;
+}
+
+export interface SearchView {
+  id: number;
+  query: string;
+  started: string;
+  ends: string;
+  responses: number;
+  files: number;
+  folders: number;
+  active: boolean;
+}
+
+export interface Dir {
+  name: string;
+  files: FileInfo[];
+}
+
+export interface BrowseResult {
+  user: string;
+  dirs: Dir[] | null;
+  private_dirs: Dir[] | null;
+}
+
+export interface ServerState {
+  connected: boolean;
+  username: string;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch('/api/v1' + path, {
+    method,
+    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: 'same-origin',
+  });
+  if (!res.ok) {
+    if (res.status === 401 && path !== '/session') session.user = null;
+    let msg = res.statusText;
+    try {
+      msg = (await res.json()).error ?? msg;
+    } catch {
+      // not JSON
+    }
+    throw new ApiError(res.status, msg);
+  }
+  return res.status === 204 ? (undefined as T) : res.json();
+}
+
+const user = (u: string) => '/users/' + encodeURIComponent(u);
+
+export const api = {
+  session: () => request<{ username: string }>('GET', '/session'),
+  login: (username: string, password: string) =>
+    request<{ username: string }>('POST', '/session', { username, password }),
+  logout: () => request<void>('DELETE', '/session'),
+
+  searches: () => request<SearchView[]>('GET', '/searches'),
+  search: (id: number) => request<SearchView>('GET', `/searches/${id}`),
+  startSearch: (query: string) => request<SearchView>('POST', '/searches', { query }),
+  deleteSearch: (id: number) => request<void>('DELETE', `/searches/${id}`),
+  hits: (id: number) => request<Hit[]>('GET', `/searches/${id}/hits`),
+
+  browse: (u: string) => request<BrowseResult>('GET', user(u) + '/browse'),
+};
+
+export function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}

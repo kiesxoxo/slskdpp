@@ -7,19 +7,26 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/kiesxoxo/slskdpp/internal/api"
 	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/config"
+	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
+	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/web"
 )
 
 const usage = `usage: slskdpp [flags] [command]
 
-With no command, slskdpp runs as a daemon.
+With no command, slskdpp runs as a daemon with the web UI.
 
 Debug commands:
   search [flags] <query>     search the network and print ranked albums
@@ -83,7 +90,16 @@ func main() {
 		return
 	}
 
+	if err := runDaemon(ctx, cfg, srvCfg, log); err != nil && !errors.Is(err, context.Canceled) {
+		fatal(err)
+	}
+}
+
+// runDaemon runs the Soulseek session and the web UI until ctx is done.
+func runDaemon(ctx context.Context, cfg config.Config, srvCfg client.ServerConfig, log *slog.Logger) error {
+	bus := events.NewBus()
 	var c *client.Client
+	var searches *search.Manager
 	c = client.New(srvCfg, client.Handlers{
 		Server: func(m any) {
 			switch m := m.(type) {
@@ -93,11 +109,80 @@ func main() {
 				log.Debug("server message", "type", fmt.Sprintf("%T", m))
 			}
 		},
-		Peer: func(user string, m any) { answerPeer(c, user, m) },
+		Peer: func(user string, m any) {
+			if r, ok := m.(protocol.FileSearchResponse); ok {
+				searches.HandleResponse(user, r)
+				return
+			}
+			answerPeer(c, user, m)
+		},
+		State: func(loggedIn bool) {
+			bus.Publish(events.Event{
+				Type: events.TypeServerState,
+				Data: events.ServerState{Connected: loggedIn, Username: cfg.Soulseek.Username},
+			})
+		},
 	})
-	if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		fatal(err)
+	searches = search.NewManager(c, search.Options{
+		OnHit: func(s *search.Search, h search.FolderHit) {
+			bus.Publish(events.Event{Type: events.TypeSearchHit, Search: s.ID, Data: events.SearchHit{SearchID: s.ID, Hit: h}})
+		},
+		OnDone: func(s *search.Search) {
+			bus.Publish(events.Event{Type: events.TypeSearchDone, Search: s.ID, Data: events.SearchDone{SearchID: s.ID, Stats: s.Stats()}})
+		},
+	})
+
+	stopWeb, err := serveWeb(ctx, cfg, c, searches, bus, log)
+	if err != nil {
+		return err
 	}
+	defer stopWeb()
+	return c.Run(ctx)
+}
+
+// serveWeb starts the API and UI server and returns a func that stops it.
+func serveWeb(ctx context.Context, cfg config.Config, c *client.Client, searches *search.Manager, bus *events.Bus, log *slog.Logger) (func(), error) {
+	password := cfg.Web.Password
+	if password == "" {
+		password = api.RandomPassword()
+		log.Warn("web.password is not set; using a random password for this run",
+			"username", cfg.Web.Username, "password", password)
+	}
+	key, err := api.LoadOrCreateKey(filepath.Join(cfg.Directories.Data, "session.key"))
+	if err != nil {
+		return nil, fmt.Errorf("session key: %w", err)
+	}
+	handler := api.New(api.Config{
+		Username:   cfg.Web.Username,
+		Password:   password,
+		SessionKey: key,
+		UI:         web.Dist(),
+		Logger:     log,
+	}, c, searches, bus)
+
+	ln, err := net.Listen("tcp", cfg.Web.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("web listener: %w", err)
+	}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		// Requests end with the daemon, which also closes event streams.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+		ErrorLog:    slog.NewLogLogger(log.Handler(), slog.LevelDebug),
+	}
+	log.Info("web UI listening", "addr", ln.Addr())
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("web server stopped", "err", err)
+		}
+	}()
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	}, nil
 }
 
 // answerPeer handles the peer requests every mode answers the same way.
