@@ -2,8 +2,10 @@ package client
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -51,6 +53,9 @@ type Peers struct {
 	// handler receives every message read from a ConnPeer connection on
 	// that connection's read goroutine, so it must not block.
 	handler func(username string, m any)
+	// fileHandler takes over file connections once their transfer token
+	// is read. It runs on the connection's own goroutine.
+	fileHandler func(username string, token uint32, conn net.Conn)
 
 	mu      sync.Mutex
 	conns   map[string]*PeerConn // newest message connection per user
@@ -70,18 +75,19 @@ type pierceResult struct {
 	err  error
 }
 
-func newPeers(username string, listenPort uint32, log *slog.Logger, server serverLink, newToken func() uint32, handler func(string, any)) *Peers {
+func newPeers(username string, listenPort uint32, log *slog.Logger, server serverLink, newToken func() uint32, handler func(string, any), fileHandler func(string, uint32, net.Conn)) *Peers {
 	return &Peers{
-		username:   username,
-		listenPort: listenPort,
-		log:        log.With("component", "peers"),
-		server:     server,
-		newToken:   newToken,
-		handler:    handler,
-		conns:      make(map[string]*PeerConn),
-		dials:      make(map[string]*dialCall),
-		addrs:      make(map[string][]chan protocol.PeerAddress),
-		pierces:    make(map[uint32]chan pierceResult),
+		username:    username,
+		listenPort:  listenPort,
+		log:         log.With("component", "peers"),
+		server:      server,
+		newToken:    newToken,
+		handler:     handler,
+		fileHandler: fileHandler,
+		conns:       make(map[string]*PeerConn),
+		dials:       make(map[string]*dialCall),
+		addrs:       make(map[string][]chan protocol.PeerAddress),
+		pierces:     make(map[uint32]chan pierceResult),
 	}
 }
 
@@ -191,6 +197,21 @@ func (p *Peers) adopt(username, typ string, conn net.Conn) {
 	switch typ {
 	case protocol.ConnPeer:
 		p.serve(p.register(username, conn))
+	case protocol.ConnFile:
+		// The uploader opens a file connection with the transfer token.
+		var b [4]byte
+		conn.SetReadDeadline(time.Now().Add(handshakeTimeout))
+		if _, err := io.ReadFull(conn, b[:]); err != nil {
+			p.log.Debug("file connection without token", "user", username, "err", err)
+			conn.Close()
+			return
+		}
+		conn.SetReadDeadline(time.Time{})
+		if p.fileHandler == nil {
+			conn.Close()
+			return
+		}
+		p.fileHandler(username, binary.LittleEndian.Uint32(b[:]), conn)
 	default:
 		p.log.Debug("unsupported connection type", "user", username, "type", typ)
 		conn.Close()
@@ -251,6 +272,22 @@ func (p *Peers) Send(ctx context.Context, username string, m protocol.PeerMessag
 		}
 		pc.Close()
 	}
+}
+
+// ConnectFile opens a file connection to username for the transfer with
+// the given token, as the uploading side does.
+func (p *Peers) ConnectFile(ctx context.Context, username string, token uint32) (net.Conn, error) {
+	conn, err := p.dial(ctx, username, protocol.ConnFile)
+	if err != nil {
+		return nil, err
+	}
+	conn.SetWriteDeadline(time.Now().Add(peerWriteTimeout))
+	if _, err := conn.Write(binary.LittleEndian.AppendUint32(nil, token)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	conn.SetWriteDeadline(time.Time{})
+	return conn, nil
 }
 
 // dial opens a connection of type typ to username and sends the init

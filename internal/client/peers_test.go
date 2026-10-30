@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"sync"
@@ -336,4 +337,49 @@ func TestSearchRoundTrip(t *testing.T) {
 	if st := s.Stats(); st.Responses != 1 || st.Files != 2 {
 		t.Errorf("stats %+v", st)
 	}
+}
+
+func TestFileConnections(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	h := newHub(t)
+	type got struct {
+		user    string
+		token   uint32
+		payload string
+	}
+	files := make(chan got, 2)
+	alice := startClient(t, ctx, h, "alice", Handlers{File: func(user string, token uint32, conn net.Conn) {
+		defer conn.Close()
+		b := make([]byte, 5)
+		io.ReadFull(conn, b)
+		files <- got{user, token, string(b)}
+	}})
+	bob := startClient(t, ctx, h, "bob", Handlers{})
+
+	send := func(token uint32) {
+		t.Helper()
+		conn, err := bob.ConnectFile(ctx, "alice", token)
+		if err != nil {
+			t.Fatalf("ConnectFile: %v", err)
+		}
+		defer conn.Close()
+		conn.Write([]byte("hello"))
+		select {
+		case g := <-files:
+			if g.user != "bob" || g.token != token || g.payload != "hello" {
+				t.Errorf("file conn %+v", g)
+			}
+		case <-ctx.Done():
+			t.Fatal("file connection never arrived")
+		}
+	}
+	send(77) // direct
+	// Alice looks firewalled: bob must ask the server to have alice
+	// connect to him, then still sends the token first.
+	h.mu.Lock()
+	h.addrOverride["alice"] = freePort(t)
+	h.mu.Unlock()
+	send(78)
+	_ = alice
 }

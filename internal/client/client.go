@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -24,6 +25,10 @@ type Handlers struct {
 	Peer func(username string, m any)
 	// State is told when the server session starts or ends.
 	State func(loggedIn bool)
+	// File takes over an incoming file connection for the transfer with
+	// the given token, and must close it. It runs on its own goroutine.
+	// Without it file connections are refused.
+	File func(username string, token uint32, conn net.Conn)
 }
 
 // Client is a Soulseek session: the server connection plus the peer layer,
@@ -62,7 +67,7 @@ func New(cfg ServerConfig, h Handlers) *Client {
 	c.srv = NewServer(cfg, c.onServer)
 	c.srv.onState = h.State
 	c.username = cfg.Username
-	c.peers = newPeers(cfg.Username, cfg.ListenPort, cfg.Logger, c.srv, c.NewToken, c.onPeer)
+	c.peers = newPeers(cfg.Username, cfg.ListenPort, cfg.Logger, c.srv, c.NewToken, c.onPeer, h.File)
 	return c
 }
 
@@ -93,6 +98,18 @@ func (c *Client) NewToken() uint32 { return c.tokens.Add(1) }
 // protocol.FileSearchResponse peer messages carrying token.
 func (c *Client) Search(token uint32, query string) error {
 	return c.srv.Send(protocol.FileSearch{Token: token, Query: query})
+}
+
+// WatchUser asks the server to report username's status changes, which
+// arrive as protocol.UserStatusResponse server messages.
+func (c *Client) WatchUser(username string) error {
+	return c.srv.Send(protocol.WatchUser{Username: username})
+}
+
+// ConnectFile opens a file connection to username for the transfer with
+// the given token, as the uploading side does.
+func (c *Client) ConnectFile(ctx context.Context, username string, token uint32) (net.Conn, error) {
+	return c.peers.ConnectFile(ctx, username, token)
 }
 
 // SendPeer delivers a message to username, connecting if needed.
