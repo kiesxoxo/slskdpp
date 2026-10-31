@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
 ### Web UI
 
 - Search results are a sortable table showing, for each album, its quality
@@ -46,6 +48,11 @@
 - `batchId`, `startedAt`, `elapsedTime` and `remainingTime` on slskd-compatible
   transfers, and `transfers.download.destination.subdirectory` in
   `/api/v0/options`.
+
+### Packaging
+
+- Container images hold the same binaries as the release archives, and are
+  smoke-tested before they get their version tags.
 
 ## [0.1.0] - 2026-10-31
 
