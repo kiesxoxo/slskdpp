@@ -33,7 +33,13 @@ func (a *API) routesV0(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v0/session/enabled", a.v0SessionEnabled)
 	h("GET /api/v0/session", a.v0CheckSession)
 	h("GET /api/v0/application", a.v0Application)
+	h("PUT /api/v0/application", a.v0Restart)
+	h("DELETE /api/v0/application", a.v0Shutdown)
 	h("GET /api/v0/application/version", a.v0Version)
+	h("GET /api/v0/application/version/latest", a.v0LatestVersion)
+	h("POST /api/v0/application/gc", a.v0CollectGarbage)
+	h("POST /api/v0/application/loopback", a.v0Loopback)
+	a.routesFiles(h)
 	h("GET /api/v0/options", a.v0Options)
 	h("GET /api/v0/events", a.v0ListEvents)
 	h("POST /api/v0/events/{type}", a.v0RaiseEvent)
@@ -85,13 +91,6 @@ func v0JSON(w http.ResponseWriter, r *http.Request, status int, v any) { writeJS
 
 func (a *API) v0Version(w http.ResponseWriter, r *http.Request) {
 	v0JSON(w, r, http.StatusOK, compatVersion)
-}
-
-func (a *API) v0Application(w http.ResponseWriter, r *http.Request) {
-	v0JSON(w, r, http.StatusOK, map[string]any{
-		"version": map[string]any{"full": compatVersion, "current": compatVersion, "isUpdateAvailable": false},
-		"server":  a.v0Server(),
-	})
 }
 
 func (a *API) v0Options(w http.ResponseWriter, r *http.Request) {

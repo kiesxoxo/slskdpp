@@ -603,3 +603,35 @@ func TestSlskdCompatMore(t *testing.T) {
 		t.Errorf("events %+v", events)
 	}
 }
+
+func TestStopAndRestart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts, err := testserver.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ts.Close() })
+	in := start(t, ctx, ts.Addr(), "stopper", nil)
+	if in.app.RestartRequested() {
+		t.Fatal("restart requested before Stop")
+	}
+	// Asked through the API, with a login, as slskd requires.
+	var tok struct{ Token string }
+	req, _ := http.NewRequest("POST", in.srv.URL+"/api/v0/session", strings.NewReader(`{"username":"slskdpp","password":"pw"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(resp.Body).Decode(&tok)
+	resp.Body.Close()
+	req, _ = http.NewRequest("PUT", in.srv.URL+"/api/v0/application", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != 204 {
+		t.Fatalf("restart: %v %v", resp, err)
+	}
+	eventually(t, "the restart request", 5*time.Second, in.app.RestartRequested)
+	// Run has returned: the instance no longer answers its peers' server.
+	eventually(t, "the session to end", 5*time.Second, func() bool { return !in.app.client.LoggedIn() })
+}

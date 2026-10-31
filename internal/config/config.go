@@ -79,6 +79,10 @@ type Web struct {
 	// X-Forwarded-For header names the real client. Loopback is trusted
 	// when this is empty.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+	// RemoteFileManagement lets the slskd-compatible API delete files and
+	// folders in the downloads and incomplete directories. Off by
+	// default, as in slskd.
+	RemoteFileManagement bool `yaml:"remote_file_management"`
 }
 
 func Default() Config {

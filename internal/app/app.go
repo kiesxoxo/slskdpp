@@ -46,6 +46,28 @@ type App struct {
 	hooks     *hooks.Runner
 	respond   *Responder
 	handler   http.Handler
+
+	mu      sync.Mutex
+	stop    context.CancelFunc // ends Run
+	restart bool               // Stop asked for a restart
+}
+
+// Stop ends Run, as though its context were cancelled. With restart,
+// RestartRequested reports it afterwards so the caller can start over.
+func (a *App) Stop(restart bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.restart = a.restart || restart
+	if a.stop != nil {
+		a.stop()
+	}
+}
+
+// RestartRequested reports whether Stop asked for a restart.
+func (a *App) RestartRequested() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.restart
 }
 
 // New builds an instance from cfg. Nothing runs until Run.
@@ -198,11 +220,12 @@ func (a *App) build() error {
 		TrustedProxies: proxies,
 		DownloadDir:    cfg.Directories.Downloads,
 		IncompleteDir:  cfg.Directories.Incomplete,
+		RemoteFiles:    cfg.Web.RemoteFileManagement,
 		UI:             web.Dist(),
 		Logger:         log,
 	}, api.Deps{
 		Net: c, Searches: a.searches, Downloads: a.downloads, Uploads: a.uploads, Shares: a.shares,
-		Hooks: a.hooks, Wishlist: a.wishlist, Bus: a.bus, DB: a.db,
+		Hooks: a.hooks, Wishlist: a.wishlist, Bus: a.bus, DB: a.db, Stop: a.Stop,
 	})
 	return err
 }
@@ -244,6 +267,9 @@ func (a *App) WaitLoggedIn(ctx context.Context) error { return a.client.Server()
 func (a *App) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	a.mu.Lock()
+	a.stop = cancel
+	a.mu.Unlock()
 	var wg sync.WaitGroup
 	wg.Go(func() { a.downloads.Run(ctx) })
 	wg.Go(func() { a.uploads.Run(ctx) })

@@ -273,8 +273,14 @@ tools built on it use: searches and their responses; browsing users, their
 folders, browse progress, details, online status and address; downloads,
 batches and a download's place in the remote queue; uploads; the event log;
 your own shares (listing, contents, rescanning); connecting to and
-disconnecting from the server; and the application version and options. These
-live under `/api/v0` with slskd's field names and states.
+disconnecting from the server; listing (and, if allowed, deleting) what is in
+the downloads and incomplete folders; and the application state, version,
+options, restart and shutdown. These live under `/api/v0` with slskd's field
+names and states.
+
+As in slskd, deleting files through `/api/v0/files` is off unless
+`web.remote_file_management` is `true`, and restarting or shutting down
+(`PUT`/`DELETE /api/v0/application`) needs a login, not an API key.
 
 For soularr, set the `[Slskd]` section as you would for slskd:
 
@@ -307,7 +313,8 @@ Tools can authenticate with an API key (`X-API-Key`, or `Authorization: Bearer`
 with the key), or log in like slskd: `POST /api/v0/session` with the web
 username and password returns a token that lasts 7 days, sent back as
 `Authorization: Bearer <token>`. A token has the same rights as logging in to
-the web UI. Chat, rooms and slskd's other endpoints are not implemented.
+the web UI. Chat, rooms, logs, telemetry and editing options through the API
+are not implemented.
 
 ## Networking
 

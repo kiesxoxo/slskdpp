@@ -97,6 +97,22 @@ func main() {
 	if err := a.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		fatal(err)
 	}
+	if a.RestartRequested() {
+		restart(log)
+	}
+}
+
+// restart replaces this process with a fresh copy of itself, same
+// arguments and environment, once everything has shut down.
+func restart(log *slog.Logger) {
+	exe, err := os.Executable()
+	if err != nil {
+		fatal(fmt.Errorf("restarting: %w", err))
+	}
+	log.Info("restarting slskdpp")
+	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+		fatal(fmt.Errorf("restarting: %w", err))
+	}
 }
 
 func newLogger(level string) *slog.Logger {

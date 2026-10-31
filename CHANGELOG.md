@@ -9,6 +9,13 @@
   `Authorization: Bearer <token>`. `GET /api/v0/session` checks a token and
   `GET /api/v0/session/enabled` reports that login is required. Failed logins
   count towards the same lockout as the web UI's.
+- slskd's files API: list the downloads and incomplete folders
+  (`/api/v0/files/{downloads,incomplete}/directories[/{base64 path}]`,
+  optionally recursive) and delete files and folders in them. Deleting is off
+  unless the new `web.remote_file_management` option is set, as in slskd.
+- slskd's application API: the full application state at
+  `GET /api/v0/application`, `version/latest`, `gc`, `loopback`, and restart
+  (`PUT`) and shutdown (`DELETE`), which need a login rather than an API key.
 
 ## [0.2.0] - 2026-10-31
 

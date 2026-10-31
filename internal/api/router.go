@@ -34,6 +34,7 @@ type Network interface {
 	Browse(ctx context.Context, username string) (protocol.SharedFileListResponse, error)
 	FolderContents(ctx context.Context, username, folder string) (protocol.FolderContentsResponse, error)
 	UserInfo(ctx context.Context, username string) (protocol.UserInfoResponse, error)
+	DistribParent() string
 	UserStatus(ctx context.Context, username string) (protocol.UserStatusResponse, error)
 	PeerAddress(ctx context.Context, username string) (protocol.PeerAddress, error)
 	BrowseStatus(username string) (client.BrowseProgress, bool)
@@ -56,6 +57,9 @@ type Config struct {
 	// DownloadDir and IncompleteDir are reported to slskd clients.
 	DownloadDir   string
 	IncompleteDir string
+	// RemoteFiles lets slskd clients delete files and folders in those
+	// directories.
+	RemoteFiles bool
 	// UI is the built web app. Without an index.html a placeholder page
 	// is served.
 	UI     fs.FS
@@ -74,6 +78,9 @@ type Deps struct {
 	Bus       *events.Bus
 	// DB stores API keys; without it only Config.APIKeys work.
 	DB *sql.DB
+	// Stop shuts the daemon down, or restarts it. Without it the API
+	// cannot.
+	Stop func(restart bool)
 }
 
 type API struct {
@@ -87,6 +94,7 @@ type API struct {
 	hooks     *hooks.Runner
 	wishlist  *wishlist.Manager
 	bus       *events.Bus
+	stop      func(restart bool)
 	keys      *keyring
 	v0        v0Searches
 	v0Events  *v0Events
@@ -114,6 +122,7 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 		hooks:     d.Hooks,
 		wishlist:  d.Wishlist,
 		bus:       d.Bus,
+		stop:      d.Stop,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
 		v0:        v0Searches{byID: map[string]*v0Search{}},

@@ -199,7 +199,9 @@ func (a *API) v0Server() map[string]any {
 		"state":           state,
 		"username":        a.net.Username(),
 		"isConnected":     st.LoggedIn,
+		"isConnecting":    st.Connecting,
 		"isLoggedIn":      st.LoggedIn,
+		"isLoggingIn":     false,
 		"isTransitioning": st.Connecting,
 	}
 	if tcp, ok := st.Remote.(*net.TCPAddr); ok {

@@ -84,6 +84,8 @@ func (n *fakeNet) Connect() bool {
 	return !n.loggedIn
 }
 
+func (n *fakeNet) DistribParent() string { return "parent" }
+
 func (n *fakeNet) Disconnect() {
 	n.mu.Lock()
 	n.paused = true
@@ -139,7 +141,10 @@ type env struct {
 	http *http.Client // carries the session cookie once logged in
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { t.Helper(); return newEnvWith(t, nil) }
+
+// newEnvWith is newEnv with edit applied to the API's config and deps.
+func newEnvWith(t *testing.T, edit func(*Config, *Deps)) *env {
 	t.Helper()
 	e := &env{net: &fakeNet{loggedIn: true}, bus: events.NewBus()}
 	e.mgr = search.NewManager(e.net, search.Options{
@@ -172,10 +177,15 @@ func newEnv(t *testing.T) *env {
 		"index.html":    {Data: []byte("<!doctype html><title>app</title>")},
 		"assets/app.js": {Data: []byte("console.log(1)")},
 	}
-	h, err := New(Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui,
-		APIKeys: []string{"config-key-123"}}, Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx,
+	cfg := Config{Username: "admin", Password: "secret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), UI: ui,
+		APIKeys: []string{"config-key-123"}, DownloadDir: filepath.Join(dir, "downloads"), IncompleteDir: filepath.Join(dir, "incomplete")}
+	deps := Deps{Net: e.net, Searches: e.mgr, Downloads: e.dl, Uploads: e.up, Shares: e.idx,
 		Hooks: hooks.New(hooks.Config{OnDownload: "echo ok $SLSKDPP_EVENT"}), Bus: e.bus, DB: db,
-		Wishlist: wishlist.New(wishlist.Config{Interval: time.Hour}, db, e.mgr, e.net, e.dl)})
+		Wishlist: wishlist.New(wishlist.Config{Interval: time.Hour}, db, e.mgr, e.net, e.dl)}
+	if edit != nil {
+		edit(&cfg, &deps)
+	}
+	h, err := New(cfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
