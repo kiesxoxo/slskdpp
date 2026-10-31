@@ -292,8 +292,14 @@ slskd download client pointing at slskdpp with an slskdpp API key. Tubifarry
 queues each album as a batch and may name the folder itself (for instance
 `Artist - Album` when the remote folder is just `CD1`); those files go straight
 into `<downloads>/<that folder>/`. It then reads `/api/v0/events` to find where
-each finished file landed. slskdpp keeps the last 1000 events in memory, so the
-log starts empty after a restart.
+each finished file landed.
+
+The event log (`GET /api/v0/events`) records the same events slskd does for
+finished downloads, finished folders, finished uploads, and connecting to and
+disconnecting from the server. `POST /api/v0/events/{type}` raises a sample
+event for testing an integration. The log is kept in the database, trimmed to
+the newest 100,000 events. slskdpp has no chat yet, so `PrivateMessageReceived`
+and `RoomMessageReceived` only appear when raised as samples.
 
 Only API key authentication is supported, not slskd's username and password
 sessions. Chat, rooms and slskd's other endpoints are not implemented.

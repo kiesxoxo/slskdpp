@@ -22,9 +22,12 @@ const (
 // The stream ends if the client falls behind; EventSource reconnects and
 // the UI refetches what it shows.
 func (a *API) events(w http.ResponseWriter, r *http.Request) {
-	// download.completed feeds the slskd event log; the download's own
+	// The completion events feed the slskd event log; the transfer's own
 	// update already tells the UI.
-	filter := func(e events.Event) bool { return e.Type != events.TypeDownloadCompleted }
+	internal := func(e events.Event) bool {
+		return e.Type == events.TypeDownloadCompleted || e.Type == events.TypeUploadCompleted
+	}
+	filter := func(e events.Event) bool { return !internal(e) }
 	if v := r.URL.Query().Get("search"); v != "" {
 		id, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
@@ -32,7 +35,7 @@ func (a *API) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter = func(e events.Event) bool {
-			return e.Type != events.TypeDownloadCompleted && (e.Search == 0 || e.Search == uint32(id))
+			return !internal(e) && (e.Search == 0 || e.Search == uint32(id))
 		}
 	}
 	sub := a.bus.Subscribe(sseBuffer, filter)

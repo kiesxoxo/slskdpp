@@ -81,7 +81,7 @@ type API struct {
 	bus       *events.Bus
 	keys      *keyring
 	v0        v0Searches
-	v0Events  v0Events
+	v0Events  *v0Events
 	limiter   *loginLimiter
 	now       func() time.Time
 }
@@ -111,8 +111,11 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 	if a.keys, err = newKeyring(d.DB, cfg.APIKeys); err != nil {
 		return nil, fmt.Errorf("loading API keys: %w", err)
 	}
+	if a.v0Events, err = newV0Events(d.DB); err != nil {
+		return nil, fmt.Errorf("loading slskd events: %w", err)
+	}
 	if a.bus != nil && a.downloads != nil {
-		go a.watchCompletions(a.subscribeCompletions())
+		go a.watchV0Events(a.subscribeV0Events())
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/session", a.login)

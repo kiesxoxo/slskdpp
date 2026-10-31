@@ -20,6 +20,8 @@ const (
 	TypeDownloadRemoved = "download.removed"
 	// Data is DownloadCompleted, published once the file is in place.
 	TypeDownloadCompleted = "download.completed"
+	// Data is UploadCompleted, published once the file has been sent.
+	TypeUploadCompleted = "upload.completed"
 	// Data is a transfers.UploadView.
 	TypeUpload = "upload"
 	// Data is DownloadRemoved (an upload ID).
@@ -59,6 +61,11 @@ type SearchDone struct {
 type DownloadCompleted struct {
 	Download transfers.View `json:"download"`
 	Local    string         `json:"local"` // the file's absolute path
+}
+
+type UploadCompleted struct {
+	Upload transfers.UploadView `json:"upload"`
+	Local  string               `json:"local"` // the file's absolute path
 }
 
 type DownloadRemoved struct {

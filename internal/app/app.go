@@ -168,6 +168,9 @@ func (a *App) build() error {
 		OnRemove: func(id int64) {
 			a.publish(events.TypeUploadRemoved, 0, events.DownloadRemoved{ID: id})
 		},
+		OnComplete: func(v transfers.UploadView, local string) {
+			a.publish(events.TypeUploadCompleted, 0, events.UploadCompleted{Upload: v, Local: local})
+		},
 		OnSpeed: func(speed uint32) { c.Server().Send(protocol.SendUploadSpeed{Speed: speed}) },
 		Logger:  log,
 	}, c, a.shares)

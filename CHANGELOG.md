@@ -22,10 +22,12 @@
 
 ### Added
 
-- slskd-compatible event log, `GET /api/v0/events`, with
-  `DownloadFileComplete` and `DownloadDirectoryComplete` events, so Lidarr's
-  Tubifarry plugin can find finished files and stops logging "Failed to update
-  download items from Slskd" every few seconds.
+- slskd-compatible event log, `GET /api/v0/events`, so Lidarr's Tubifarry
+  plugin can find finished files and stops logging "Failed to update download
+  items from Slskd" every few seconds. It records `DownloadFileComplete`,
+  `DownloadDirectoryComplete`, `UploadFileComplete`, `SoulseekClientConnected`
+  and `SoulseekClientDisconnected` events, kept in the database.
+- `POST /api/v0/events/{type}` raises a sample event of any slskd type.
 - slskd-compatible download batches, `POST /api/v0/transfers/downloads/batches`
   and `GET /api/v0/transfers/downloads/batches/{id}`, honouring
   `options.destination` and reporting per-file `failures`.

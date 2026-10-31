@@ -351,7 +351,7 @@ func compatVersionForTest() string { return "0.24.0" }
 func TestTubifarryCompat(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	_, fetcher, originals := pair(t, ctx, nil)
+	sharer, fetcher, originals := pair(t, ctx, nil)
 	downloads := filepath.Join(fetcher.dir, "downloads")
 
 	var options struct {
@@ -364,8 +364,9 @@ func TestTubifarryCompat(t *testing.T) {
 	if options.Directories.Downloads != downloads || options.Transfers.Download.Destination.Subdirectory != "${SOURCE_DIRECTORY}" {
 		t.Errorf("options %+v", options)
 	}
-	var events []struct{ ID, Timestamp, Type, Data string }
-	if code := fetcher.call("GET", "/api/v0/events?offset=0&limit=50", nil, &events); code != 200 || len(events) != 0 {
+	type event struct{ ID, Timestamp, Type, Data string }
+	var events []event
+	if code := fetcher.call("GET", "/api/v0/events?offset=0&limit=50", nil, &events); code != 200 || len(events) != 1 || events[0].Type != "SoulseekClientConnected" {
 		t.Fatalf("events before downloading: %d %v", code, events)
 	}
 
@@ -411,8 +412,9 @@ func TestTubifarryCompat(t *testing.T) {
 
 	eventually(t, "the completion events", 5*time.Second, func() bool {
 		fetcher.call("GET", "/api/v0/events?offset=0&limit=50", nil, &events)
-		return len(events) == 4
+		return len(events) == 5
 	})
+	events = events[:4] // the connection came first
 	// Newest first: the directory, then its files.
 	if events[0].Type != "DownloadDirectoryComplete" {
 		t.Fatalf("events %+v", events)
@@ -443,5 +445,22 @@ func TestTubifarryCompat(t *testing.T) {
 	if code := fetcher.call("GET", "/api/v0/transfers/downloads/batches/"+id, nil, &got); code != 200 ||
 		got.Options.Destination != "Artist - Testalbum (2026)" || got.Options.ExternalID != "lidarr-1" {
 		t.Errorf("batch: %d %+v", code, got)
+	}
+
+	// The sharer logged each file it sent.
+	var sent []event
+	eventually(t, "the sharer's upload events", 5*time.Second, func() bool {
+		sharer.call("GET", "/api/v0/events", nil, &sent)
+		return len(sent) == 4
+	})
+	for _, e := range sent[:3] {
+		var u struct {
+			LocalFilename string
+			Transfer      struct{ Direction, Username string }
+		}
+		json.Unmarshal([]byte(e.Data), &u)
+		if _, ok := originals[filepath.Base(u.LocalFilename)]; e.Type != "UploadFileComplete" || !ok || u.Transfer.Direction != "Upload" || u.Transfer.Username != "fetcher" {
+			t.Errorf("upload event %s %s", e.Type, e.Data)
+		}
 	}
 }

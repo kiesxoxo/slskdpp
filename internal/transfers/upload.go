@@ -94,6 +94,9 @@ type UploadConfig struct {
 	// OnUpdate and OnRemove follow the same rules as in Config.
 	OnUpdate func(UploadView)
 	OnRemove func(id int64)
+	// OnComplete is told when an upload has been sent, with the local
+	// file's path. Same rules as OnUpdate.
+	OnComplete func(v UploadView, local string)
 	// OnSpeed reports our average upload speed after each upload, for the
 	// server (bytes per second).
 	OnSpeed func(uint32)
@@ -132,6 +135,9 @@ func NewUploads(cfg UploadConfig, net UploadNetwork, files Resolver) *Uploads {
 	}
 	if cfg.OnUpdate == nil {
 		cfg.OnUpdate = func(UploadView) {}
+	}
+	if cfg.OnComplete == nil {
+		cfg.OnComplete = func(UploadView, string) {}
 	}
 	if cfg.OnRemove == nil {
 		cfg.OnRemove = func(int64) {}
@@ -314,6 +320,7 @@ func (u *Uploads) run(ctx context.Context, up *Upload) {
 	case err == nil:
 		up.Completed = time.Now()
 		u.setLocked(up, UploadCompleted, "")
+		u.cfg.OnComplete(u.viewLocked(up), up.local)
 		u.log.Info("upload completed", "user", up.Username, "file", up.Filename)
 	case errors.Is(err, errRefused):
 		u.setLocked(up, UploadCancelled, err.Error())

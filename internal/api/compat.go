@@ -33,6 +33,7 @@ func (a *API) routesV0(mux *http.ServeMux) {
 	h("GET /api/v0/application/version", a.v0Version)
 	h("GET /api/v0/options", a.v0Options)
 	h("GET /api/v0/events", a.v0ListEvents)
+	h("POST /api/v0/events/{type}", a.v0RaiseEvent)
 
 	h("GET /api/v0/searches", a.v0ListSearches)
 	h("POST /api/v0/searches", a.v0StartSearch)
@@ -453,6 +454,29 @@ func v0File(v transfers.View, now time.Time) map[string]any {
 	}
 	if v.Error != "" {
 		m["exception"] = v.Error
+	}
+	return m
+}
+
+var v0UploadStates = map[transfers.UploadState]transfers.State{
+	transfers.UploadQueued:       transfers.StateQueued,
+	transfers.UploadInitializing: transfers.StateInitializing,
+	transfers.UploadTransferring: transfers.StateTransferring,
+	transfers.UploadCompleted:    transfers.StateCompleted,
+	transfers.UploadFailed:       transfers.StateFailed,
+	transfers.UploadCancelled:    transfers.StateCancelled,
+}
+
+// v0UploadFile shows an upload as an slskd transfer.
+func v0UploadFile(u transfers.UploadView, now time.Time) map[string]any {
+	m := v0File(transfers.View{
+		ID: u.ID, Username: u.Username, Filename: u.Filename, Size: u.Size, Bytes: u.Bytes,
+		State: v0UploadStates[u.State], Error: u.Error, Speed: u.Speed,
+		Created: u.Created, Started: u.Started, Completed: u.Completed,
+	}, now)
+	m["direction"] = "Upload"
+	if u.Place > 0 {
+		m["placeInQueue"] = u.Place
 	}
 	return m
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kiesxoxo/slskdpp/internal/events"
+	"github.com/kiesxoxo/slskdpp/internal/store"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
 
@@ -16,31 +17,57 @@ type v0EventRecord struct {
 }
 
 func TestV0EventLog(t *testing.T) {
-	var l v0Events
-	at := time.Date(2026, 10, 31, 12, 0, 0, 123456789, time.UTC)
-	for i := range v0EventsKept + 5 {
-		l.add("Noop", at, map[string]any{"n": i})
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	page, total := l.page(0, 3)
-	if total != v0EventsKept || len(page) != 3 {
-		t.Fatalf("total %d, page %d", total, len(page))
+	defer db.Close()
+	for _, withDB := range []bool{false, true} {
+		var l *v0Events
+		if withDB {
+			l, _ = newV0Events(db)
+		} else {
+			l, _ = newV0Events(nil)
+		}
+		l.keep, l.pruneEvery = 20, 5
+		at := time.Date(2026, 10, 31, 12, 0, 0, 123456789, time.UTC)
+		for i := range 25 {
+			e, err := l.add("Noop", at, map[string]any{"n": i})
+			if err != nil || e["type"] != "Noop" || e["n"] != i || e["version"] != 0 || !isUUID(e["id"].(string)) {
+				t.Fatalf("add: %v %v", e, err)
+			}
+		}
+		page, total, err := l.page(0, 3)
+		if err != nil || total != 20 || len(page) != 3 {
+			t.Fatalf("db %v: total %d, page %d, %v", withDB, total, len(page), err)
+		}
+		// Newest first, each strictly later than the one before even
+		// though they were all recorded at the same instant.
+		if !page[0].At.After(page[1].At) || !page[1].At.After(page[2].At) {
+			t.Errorf("not newest first with distinct times: %v %v %v", page[0].At, page[1].At, page[2].At)
+		}
+		// data holds the event's own fields, as slskd stores it.
+		if page[0].Data != `{"n":24,"version":0}` {
+			t.Errorf("newest event %s", page[0].Data)
+		}
+		if page, _, _ := l.page(19, 10); len(page) != 1 || page[0].Data != `{"n":5,"version":0}` {
+			t.Errorf("db %v: last page %v", withDB, page)
+		}
+		if page, _, _ := l.page(20, 10); len(page) != 0 {
+			t.Errorf("past the end %v", page)
+		}
 	}
-	// Newest first, each strictly later than the one before even though
-	// they were all recorded at the same instant.
-	if !page[0].At.After(page[1].At) || !page[1].At.After(page[2].At) {
-		t.Errorf("not newest first with distinct times: %v %v %v", page[0].At, page[1].At, page[2].At)
+	// After a restart, timestamps keep increasing from where they were.
+	l, err := newV0Events(db)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(page[0].Data, `"n":1004`) {
-		t.Errorf("newest event %s", page[0].Data)
+	l.add("Noop", time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC), map[string]any{})
+	if page, _, _ := l.page(0, 2); !page[0].At.After(page[1].At) {
+		t.Errorf("after restart %v then %v", page[1].At, page[0].At)
 	}
-	if got := v0EventTime(at); got != "2026-10-31T12:00:00.1234567Z" {
+	if got := v0EventTime(time.Date(2026, 10, 31, 12, 0, 0, 123456789, time.UTC)); got != "2026-10-31T12:00:00.1234567Z" {
 		t.Errorf("timestamp %q", got)
-	}
-	if page, _ := l.page(v0EventsKept-1, 10); len(page) != 1 || !strings.Contains(page[0].Data, `"n":5,`) {
-		t.Errorf("last page %v", page)
-	}
-	if page, _ := l.page(v0EventsKept, 10); len(page) != 0 {
-		t.Errorf("past the end %v", page)
 	}
 }
 
@@ -206,9 +233,9 @@ func TestV0Events(t *testing.T) {
 	if dirEvent.Type != "DownloadDirectoryComplete" || fileEvent.Type != "DownloadFileComplete" || !isUUID(dirEvent.ID) {
 		t.Fatalf("events %s", b)
 	}
-	var dir struct{ LocalDirectoryName, RemoteDirectoryName, Username, Type string }
+	var dir map[string]any
 	json.Unmarshal([]byte(dirEvent.Data), &dir)
-	if dir.LocalDirectoryName != local || dir.RemoteDirectoryName != `@@x\Album` || dir.Username != "bob" || dir.Type != "DownloadDirectoryComplete" {
+	if dir["localDirectoryName"] != local || dir["remoteDirectoryName"] != `@@x\Album` || dir["username"] != "bob" || dir["version"] != 0.0 || len(dir) != 4 {
 		t.Errorf("directory event %s", dirEvent.Data)
 	}
 	var file struct {
@@ -222,6 +249,72 @@ func TestV0Events(t *testing.T) {
 	}
 	if !(dirEvent.Timestamp > fileEvent.Timestamp) {
 		t.Errorf("timestamps %s, %s", dirEvent.Timestamp, fileEvent.Timestamp)
+	}
+}
+
+func TestV0EventTypes(t *testing.T) {
+	e := newEnv(t)
+	e.login(t)
+	get := func() []v0EventRecord {
+		var list []v0EventRecord
+		_, b := e.do(t, "GET", "/api/v0/events", nil)
+		json.Unmarshal(b, &list)
+		return list
+	}
+
+	// Connection changes are recorded; repeats are not.
+	for _, c := range []bool{true, true, false, false, true} {
+		e.bus.Publish(events.Event{Type: events.TypeServerState, Data: events.ServerState{Connected: c}})
+	}
+	now := time.Now()
+	e.bus.Publish(events.Event{Type: events.TypeUploadCompleted, Data: events.UploadCompleted{
+		Upload: transfers.UploadView{ID: 7, Username: "carol", Filename: `music\Album\song.mp3`, Size: 3, Bytes: 3,
+			State: transfers.UploadCompleted, Created: now, Started: now, Completed: now.Add(time.Second)},
+		Local: "/srv/music/Album/song.mp3",
+	}})
+	var list []v0EventRecord
+	eventually(t, "the events", func() bool { list = get(); return len(list) == 4 })
+	var types []string
+	for _, ev := range list {
+		types = append(types, ev.Type)
+	}
+	if got := strings.Join(types, " "); got != "UploadFileComplete SoulseekClientConnected SoulseekClientDisconnected SoulseekClientConnected" {
+		t.Fatalf("types %s", got)
+	}
+	var up struct {
+		LocalFilename, RemoteFilename string
+		Transfer                      struct{ Direction, State, Username, ElapsedTime string }
+	}
+	json.Unmarshal([]byte(list[0].Data), &up)
+	if up.LocalFilename != "/srv/music/Album/song.mp3" || up.RemoteFilename != `music\Album\song.mp3` || up.Transfer.Direction != "Upload" ||
+		up.Transfer.State != "Completed, Succeeded" || up.Transfer.Username != "carol" || up.Transfer.ElapsedTime != "00:00:01.0000000" {
+		t.Errorf("upload event %s", list[0].Data)
+	}
+	if !strings.Contains(list[2].Data, `"message":"Disconnected from the Soulseek server"`) {
+		t.Errorf("disconnected event %s", list[2].Data)
+	}
+
+	// Sample events, as slskd raises them for testing integrations.
+	resp, b := e.do(t, "POST", "/api/v0/events/downloaddirectorycomplete", "x-")
+	var raised map[string]any
+	json.Unmarshal(b, &raised)
+	if resp.StatusCode != 201 || raised["type"] != "DownloadDirectoryComplete" || raised["username"] != "x-username" ||
+		raised["localDirectoryName"] != "x-local.directory" || !isUUID(raised["id"].(string)) || raised["timestamp"] == nil {
+		t.Errorf("raise: %d %s", resp.StatusCode, b)
+	}
+	for _, typ := range v0EventTypes {
+		if resp, b := e.do(t, "POST", "/api/v0/events/"+typ, nil); resp.StatusCode != 201 {
+			t.Errorf("raise %s: %d %s", typ, resp.StatusCode, b)
+		}
+	}
+	if list = get(); len(list) != 5+len(v0EventTypes) || list[len(v0EventTypes)].ID != raised["id"] {
+		t.Errorf("%d events after raising", len(list))
+	}
+	if resp, b := e.do(t, "POST", "/api/v0/events/Bogus", nil); resp.StatusCode != 400 || !strings.Contains(string(b), "DownloadFileComplete, ") {
+		t.Errorf("unknown type: %d %s", resp.StatusCode, b)
+	}
+	if resp, _ := e.do(t, "POST", "/api/v0/events/any", nil); resp.StatusCode != 400 {
+		t.Errorf("Any: %d", resp.StatusCode)
 	}
 }
 
