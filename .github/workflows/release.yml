@@ -1,12 +1,19 @@
 name: Release
 
-# Pushing a tag like v1.2.3 runs CI, then publishes binaries as a GitHub
-# release and multi-platform images on ghcr.io. Tags with a hyphen
-# (v1.2.3-rc.1) are marked as pre-releases and do not move :latest.
+# Pushing a tag like v1.2.3, or running this workflow by hand with a
+# version (it then tags the chosen commit itself), runs CI and publishes
+# binaries as a GitHub release and multi-platform images on ghcr.io.
+# Versions with a hyphen (v1.2.3-rc.1) are pre-releases and do not move
+# :latest.
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, such as v0.2.0
+        required: true
 
 permissions:
   contents: read
@@ -15,14 +22,55 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  binaries:
-    name: Binaries and GitHub release
+  tag:
+    name: Tag
     needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+      - id: v
+        env:
+          INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version=${INPUT:-$GITHUB_REF_NAME}
+          if ! [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::$version is not a version like v1.2.3"; exit 1
+          fi
+          if ! grep -qF "## [${version#v}]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section for $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Create the tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::$VERSION is already tagged"; exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "slskdpp ${VERSION#v}" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
+
+  binaries:
+    name: Binaries and GitHub release
+    needs: tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.version }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -35,8 +83,6 @@ jobs:
         working-directory: web
         run: npm ci && npm run build
       - name: Build binaries
-        env:
-          VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           v=${VERSION#v}
@@ -63,10 +109,8 @@ jobs:
       - name: Check the Linux binary
         run: |
           tar -xzf dist/slskdpp_*_linux_amd64.tar.gz -C /tmp
-          /tmp/slskdpp_*_linux_amd64/slskdpp -version | tee /dev/stderr | grep -qF "${GITHUB_REF_NAME}"
+          /tmp/slskdpp_*_linux_amd64/slskdpp -version | tee /dev/stderr | grep -qF "$VERSION"
       - name: Release notes
-        env:
-          VERSION: ${{ github.ref_name }}
         run: |
           # The CHANGELOG section for this version, up to the next heading.
           awk -v v="${VERSION#v}" '
@@ -83,7 +127,6 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ github.ref_name }}
         run: |
           pre=""
           case "$VERSION" in *-*) pre="--prerelease" ;; esac
@@ -91,7 +134,7 @@ jobs:
 
   image:
     name: Container images
-    needs: ci
+    needs: tag
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -105,6 +148,8 @@ jobs:
             suffix: '-alpine'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.version }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -119,9 +164,9 @@ jobs:
             latest=false
             suffix=${{ matrix.suffix }},onlatest=true
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+            type=semver,pattern={{version}},value=${{ needs.tag.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.tag.outputs.version }}
+            type=raw,value=latest,enable=${{ !contains(needs.tag.outputs.version, '-') }}
           labels: |
             org.opencontainers.image.title=slskdpp
             org.opencontainers.image.description=A small, headless Soulseek client with a web UI
@@ -131,7 +176,7 @@ jobs:
           platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ needs.tag.outputs.version }}
             RUNTIME=${{ matrix.runtime }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -332,10 +332,11 @@ serves a short "UI not built" page, and the API still works.
 
 `slskdpp -version` prints the version the binary was built from.
 
-To release, add a section for the version to [CHANGELOG.md](CHANGELOG.md) and
-push a tag such as `v0.2.0`. The release workflow runs CI, then publishes the
-binaries, checksums and changelog section as a GitHub release, and the images
-on ghcr.io. A tag with a hyphen (`v0.2.0-rc.1`) makes a pre-release and leaves
+To release, add a section for the version to [CHANGELOG.md](CHANGELOG.md),
+then either push a tag such as `v0.2.0` or run the **Release** workflow from
+the Actions tab with that version, which tags the commit for you. The workflow
+runs CI, then publishes the binaries, checksums and changelog section as a
+GitHub release, and the images on ghcr.io. A tag with a hyphen (`v0.2.0-rc.1`) makes a pre-release and leaves
 `latest` alone.
 
 The code is organized as follows:
