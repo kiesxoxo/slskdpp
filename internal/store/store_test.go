@@ -25,7 +25,7 @@ func TestOpenMigratesOnce(t *testing.T) {
 	var n, version int
 	db.QueryRow("SELECT count(*) FROM downloads").Scan(&n)
 	db.QueryRow("PRAGMA user_version").Scan(&version)
-	if n != 1 || version != 5 {
+	if n != 1 || version != 6 {
 		t.Errorf("rows %d version %d", n, version)
 	}
 	var mode string

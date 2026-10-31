@@ -69,6 +69,23 @@ func destFor(remote, folder string) string {
 	return strings.Join(keep, "/")
 }
 
+// CleanDest checks a destination folder a client asked for, relative to
+// the downloads directory, and returns it slash-separated with every part
+// made safe. "" means the default layout.
+func CleanDest(dest string) (string, error) {
+	parts := remoteParts(dest)
+	if len(parts) > 0 && (strings.HasPrefix(dest, "/") || strings.HasPrefix(dest, `\`) || strings.Contains(parts[0], ":")) {
+		return "", fmt.Errorf("destination %q is not relative to the downloads directory", dest)
+	}
+	for i, p := range parts {
+		if strings.TrimSpace(p) == "." || strings.TrimSpace(p) == ".." {
+			return "", fmt.Errorf("destination %q leaves the downloads directory", dest)
+		}
+		parts[i] = cleanName(p)
+	}
+	return strings.Join(parts, "/"), nil
+}
+
 func slicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

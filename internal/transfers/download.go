@@ -65,8 +65,10 @@ type Download struct {
 	Created     time.Time
 	Updated     time.Time
 	Completed   time.Time
+	Batch       string // the slskd-compatible batch it was queued in, if any
 
 	// Not persisted.
+	started      time.Time // when the current transfer began
 	token        uint32
 	speed        float64
 	queuePlace   uint32
@@ -97,6 +99,8 @@ type View struct {
 	Created     time.Time `json:"created"`
 	Updated     time.Time `json:"updated"`
 	Completed   time.Time `json:"completed,omitzero"`
+	Started     time.Time `json:"started,omitzero"` // when the current or last transfer began
+	Batch       string    `json:"batch,omitempty"`
 }
 
 func (d *Download) view() View {
@@ -106,6 +110,7 @@ func (d *Download) view() View {
 		Size: d.Size, Bytes: d.Bytes, State: d.State, Error: d.Error, Attempts: d.Attempts,
 		Sources: len(d.Tried) + 1, Searching: d.searching,
 		Created: d.Created, Updated: d.Updated, Completed: d.Completed,
+		Started: d.started, Batch: d.Batch,
 	}
 	if d.State == StateRemoteQueued {
 		v.QueuePlace = d.queuePlace
@@ -333,11 +338,49 @@ type FileRequest struct {
 // being downloaded: files keep their layout below it. Files already being
 // downloaded from that user are returned as they are.
 func (m *Manager) Enqueue(username string, files []FileRequest, folder string) ([]View, error) {
+	return m.EnqueueWith(username, files, EnqueueOptions{Folder: folder})
+}
+
+// EnqueueOptions say where and how queued files go.
+type EnqueueOptions struct {
+	// Folder is the remote folder being downloaded: files keep their
+	// layout below it.
+	Folder string
+	// Batch, if set, records the files as one slskd-compatible batch.
+	// Its Destination, cleaned by CleanDest, replaces the usual folder:
+	// every file goes directly into it.
+	Batch *Batch
+}
+
+// ErrBatchExists is returned when a batch ID is already taken.
+var ErrBatchExists = errors.New("a batch with this id exists")
+
+// EnqueueWith is Enqueue with options.
+func (m *Manager) EnqueueWith(username string, files []FileRequest, opts EnqueueOptions) ([]View, error) {
 	if username == "" {
 		return nil, errors.New("username is required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	batch, dest := "", ""
+	if b := opts.Batch; b != nil {
+		var err error
+		if dest, err = CleanDest(b.Destination); err != nil {
+			return nil, err
+		}
+		if _, err := loadBatch(m.db, b.ID); err == nil {
+			return nil, ErrBatchExists
+		}
+		nb := *b
+		nb.Username, nb.Destination = username, dest
+		if nb.Created.IsZero() {
+			nb.Created = time.Now()
+		}
+		if err := insertBatch(m.db, nb); err != nil {
+			return nil, err
+		}
+		batch = b.ID
+	}
 	var out []View
 	now := time.Now()
 	for _, f := range files {
@@ -351,8 +394,11 @@ func (m *Manager) Enqueue(username string, files []FileRequest, folder string) (
 			continue
 		}
 		d := &Download{
-			Username: username, Filename: f.Path, Size: f.Size, Dest: destFor(f.Path, folder),
-			State: StateQueued, NextAttempt: now, Created: now, Updated: now,
+			Username: username, Filename: f.Path, Size: f.Size, Dest: destFor(f.Path, opts.Folder),
+			State: StateQueued, NextAttempt: now, Created: now, Updated: now, Batch: batch,
+		}
+		if dest != "" {
+			d.Dest = dest + "/" + cleanName(path.Base(strings.ReplaceAll(f.Path, `\`, "/")))
 		}
 		if err := insertDownload(m.db, d); err != nil {
 			return out, err
@@ -364,6 +410,12 @@ func (m *Manager) Enqueue(username string, files []FileRequest, folder string) (
 	go m.net.WatchUser(username)
 	m.wake()
 	return out, nil
+}
+
+// Batch returns a batch queued through EnqueueWith.
+func (m *Manager) Batch(id string) (Batch, bool) {
+	b, err := loadBatch(m.db, id)
+	return b, err == nil
 }
 
 // List returns all downloads, oldest first.
@@ -458,6 +510,11 @@ func (m *Manager) Remove(id int64) error {
 	}
 	delete(m.downloads, id)
 	err := deleteDownload(m.db, id)
+	if err == nil && d.Batch != "" {
+		if perr := pruneBatches(m.db); perr != nil {
+			m.log.Error("forgetting batches", "err", perr)
+		}
+	}
 	m.cfg.OnRemove(id)
 	part := m.partPath(d)
 	m.mu.Unlock()
@@ -629,6 +686,7 @@ func (m *Manager) HandleFileConn(username string, token uint32, conn net.Conn) {
 	d.cancel = cancel
 	d.State = StateTransferring
 	d.speed = 0
+	d.started = time.Now()
 	m.saveLocked(d)
 	part, size := m.partPath(d), d.Size
 	m.mu.Unlock()

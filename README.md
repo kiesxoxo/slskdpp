@@ -258,8 +258,9 @@ shows you its output.
 
 slskdpp answers the parts of [slskd](https://github.com/slskd/slskd)'s API that
 tools built on it use: searches, search responses, user directories and
-browsing, download transfers, and application version and options. These live
-under `/api/v0` with slskd's field names and states.
+browsing, download transfers and batches, the event log of finished downloads,
+and application version and options. These live under `/api/v0` with slskd's
+field names and states.
 
 For soularr, set the `[Slskd]` section as you would for slskd:
 
@@ -273,6 +274,14 @@ download_dir = /path/to/slskdpp/downloads
 
 `download_dir` must be slskdpp's downloads folder as soularr sees it. Files land
 in `<downloads>/<remote folder name>/<file>`, which is where soularr looks.
+
+For Lidarr's [Tubifarry](https://github.com/TypNull/Tubifarry) plugin, add an
+slskd download client pointing at slskdpp with an slskdpp API key. Tubifarry
+queues each album as a batch and may name the folder itself (for instance
+`Artist - Album` when the remote folder is just `CD1`); those files go straight
+into `<downloads>/<that folder>/`. It then reads `/api/v0/events` to find where
+each finished file landed. slskdpp keeps the last 1000 events in memory, so the
+log starts empty after a restart.
 
 Only API key authentication is supported, not slskd's username and password
 sessions. Chat, rooms and slskd's other endpoints are not implemented.

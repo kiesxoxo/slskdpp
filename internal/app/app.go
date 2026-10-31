@@ -121,6 +121,7 @@ func (a *App) build() error {
 			a.publish(events.TypeDownloadRemoved, 0, events.DownloadRemoved{ID: id})
 		},
 		OnComplete: func(v transfers.View, local string) {
+			a.publish(events.TypeDownloadCompleted, 0, events.DownloadCompleted{Download: v, Local: local})
 			a.hooks.Fire(hooks.Event{Event: hooks.DownloadCompleted, Path: local, Folder: filepath.Dir(local),
 				Username: v.Username, Filename: v.Filename, Size: v.Size})
 		},
