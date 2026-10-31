@@ -32,6 +32,7 @@ func (a *API) routesV0(mux *http.ServeMux) {
 	h("GET /api/v0/application", a.v0Application)
 	h("GET /api/v0/application/version", a.v0Version)
 	h("GET /api/v0/options", a.v0Options)
+	h("GET /api/v0/events", a.v0ListEvents)
 
 	h("GET /api/v0/searches", a.v0ListSearches)
 	h("POST /api/v0/searches", a.v0StartSearch)
@@ -42,6 +43,8 @@ func (a *API) routesV0(mux *http.ServeMux) {
 
 	h("GET /api/v0/transfers/downloads", a.v0Downloads)
 	h("DELETE /api/v0/transfers/downloads/all/completed", a.v0ClearDownloads)
+	h("POST /api/v0/transfers/downloads/batches", a.v0EnqueueBatch)
+	h("GET /api/v0/transfers/downloads/batches/{id}", a.v0GetBatch)
 	h("GET /api/v0/transfers/downloads/{username}", a.v0UserDownloads)
 	h("POST /api/v0/transfers/downloads/{username}", a.v0Enqueue)
 	h("GET /api/v0/transfers/downloads/{username}/{id}", a.v0Download)
@@ -74,6 +77,9 @@ func (a *API) v0Application(w http.ResponseWriter, r *http.Request) {
 func (a *API) v0Options(w http.ResponseWriter, r *http.Request) {
 	v0JSON(w, r, http.StatusOK, map[string]any{
 		"directories": map[string]string{"downloads": a.cfg.DownloadDir, "incomplete": a.cfg.IncompleteDir},
+		// Files queued without a destination go into a folder named after
+		// their remote parent folder, as with slskd's default.
+		"transfers": map[string]any{"download": map[string]any{"destination": map[string]any{"subdirectory": "${SOURCE_DIRECTORY}"}}},
 	})
 }
 
@@ -388,7 +394,21 @@ func v0Time(t time.Time) any {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-func v0File(v transfers.View) map[string]any {
+// v0Duration formats d as a .NET TimeSpan: [d.]hh:mm:ss.fffffff.
+func v0Duration(d time.Duration) string {
+	d = max(d, 0)
+	ticks := int64(d / 100)
+	frac := ticks % 10_000_000
+	secs := ticks / 10_000_000
+	days, h, m, sec := secs/86400, secs/3600%24, secs/60%60, secs%60
+	out := fmt.Sprintf("%02d:%02d:%02d.%07d", h, m, sec, frac)
+	if days > 0 {
+		out = fmt.Sprintf("%d.%s", days, out)
+	}
+	return out
+}
+
+func v0File(v transfers.View, now time.Time) map[string]any {
 	state := v0States[v.State]
 	if v.State == transfers.StateFailed && strings.HasPrefix(v.Error, "denied") {
 		state = "Completed, Rejected"
@@ -416,6 +436,21 @@ func v0File(v transfers.View) map[string]any {
 	if v.QueuePlace > 0 {
 		m["placeInQueue"] = v.QueuePlace
 	}
+	if v.Batch != "" {
+		m["batchId"] = v.Batch
+	}
+	if !v.Started.IsZero() && (v.State == transfers.StateTransferring || v.State == transfers.StateCompleted) {
+		m["startedAt"] = v0Time(v.Started)
+		end := now
+		if v.State == transfers.StateCompleted && v.Completed.After(v.Started) {
+			end = v.Completed
+		}
+		m["elapsedTime"] = v0Duration(end.Sub(v.Started))
+		if v.State == transfers.StateTransferring && v.Speed > 0 {
+			left := v.Size - min(v.Bytes, v.Size)
+			m["remainingTime"] = v0Duration(time.Duration(float64(left) / float64(v.Speed) * float64(time.Second)))
+		}
+	}
 	if v.Error != "" {
 		m["exception"] = v.Error
 	}
@@ -424,7 +459,7 @@ func v0File(v transfers.View) map[string]any {
 
 // v0Group groups downloads into slskd's per-user transfers, each with
 // its remote directories.
-func v0Group(views []transfers.View) []map[string]any {
+func v0Group(views []transfers.View, now time.Time) []map[string]any {
 	type dirKey struct{ user, dir string }
 	dirs := map[dirKey][]map[string]any{}
 	var order []dirKey
@@ -433,7 +468,7 @@ func v0Group(views []transfers.View) []map[string]any {
 		if _, ok := dirs[k]; !ok {
 			order = append(order, k)
 		}
-		dirs[k] = append(dirs[k], v0File(v))
+		dirs[k] = append(dirs[k], v0File(v, now))
 	}
 	var users []string
 	byUser := map[string][]map[string]any{}
@@ -460,7 +495,7 @@ func remoteDir(p string) string {
 }
 
 func (a *API) v0Downloads(w http.ResponseWriter, r *http.Request) {
-	v0JSON(w, r, http.StatusOK, v0Group(a.downloads.List()))
+	v0JSON(w, r, http.StatusOK, v0Group(a.downloads.List(), a.now()))
 }
 
 func (a *API) v0UserDownloads(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +506,7 @@ func (a *API) v0UserDownloads(w http.ResponseWriter, r *http.Request) {
 			mine = append(mine, v)
 		}
 	}
-	groups := v0Group(mine)
+	groups := v0Group(mine, a.now())
 	if len(groups) == 0 {
 		v0JSON(w, r, http.StatusOK, map[string]any{"username": user, "directories": []any{}})
 		return
@@ -504,7 +539,7 @@ func (a *API) v0Enqueue(w http.ResponseWriter, r *http.Request) {
 	}
 	enqueued := make([]map[string]any, len(views))
 	for i, v := range views {
-		enqueued[i] = v0File(v)
+		enqueued[i] = v0File(v, a.now())
 	}
 	v0JSON(w, r, http.StatusCreated, map[string]any{"enqueued": enqueued, "failed": []any{}})
 }
@@ -523,7 +558,7 @@ func (a *API) v0Find(w http.ResponseWriter, r *http.Request) (transfers.View, bo
 
 func (a *API) v0Download(w http.ResponseWriter, r *http.Request) {
 	if v, ok := a.v0Find(w, r); ok {
-		v0JSON(w, r, http.StatusOK, v0File(v))
+		v0JSON(w, r, http.StatusOK, v0File(v, a.now()))
 	}
 }
 

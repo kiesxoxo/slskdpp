@@ -22,14 +22,18 @@ const (
 // The stream ends if the client falls behind; EventSource reconnects and
 // the UI refetches what it shows.
 func (a *API) events(w http.ResponseWriter, r *http.Request) {
-	var filter func(events.Event) bool
+	// download.completed feeds the slskd event log; the download's own
+	// update already tells the UI.
+	filter := func(e events.Event) bool { return e.Type != events.TypeDownloadCompleted }
 	if v := r.URL.Query().Get("search"); v != "" {
 		id, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid search id")
 			return
 		}
-		filter = func(e events.Event) bool { return e.Search == 0 || e.Search == uint32(id) }
+		filter = func(e events.Event) bool {
+			return e.Type != events.TypeDownloadCompleted && (e.Search == 0 || e.Search == uint32(id))
+		}
 	}
 	sub := a.bus.Subscribe(sseBuffer, filter)
 	defer a.bus.Unsubscribe(sub)

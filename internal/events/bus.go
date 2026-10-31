@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/kiesxoxo/slskdpp/internal/search"
+	"github.com/kiesxoxo/slskdpp/internal/transfers"
 )
 
 // Event types.
@@ -17,6 +18,8 @@ const (
 	TypeDownload = "download"
 	// Data is DownloadRemoved.
 	TypeDownloadRemoved = "download.removed"
+	// Data is DownloadCompleted, published once the file is in place.
+	TypeDownloadCompleted = "download.completed"
 	// Data is a transfers.UploadView.
 	TypeUpload = "upload"
 	// Data is DownloadRemoved (an upload ID).
@@ -51,6 +54,11 @@ type SearchHit struct {
 type SearchDone struct {
 	SearchID uint32       `json:"search_id"`
 	Stats    search.Stats `json:"stats"`
+}
+
+type DownloadCompleted struct {
+	Download transfers.View `json:"download"`
+	Local    string         `json:"local"` // the file's absolute path
 }
 
 type DownloadRemoved struct {

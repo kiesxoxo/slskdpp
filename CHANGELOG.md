@@ -20,6 +20,19 @@
   connection is down; the sidebar shows live transfer speeds.
 - The Inter typeface is bundled, so the UI looks the same everywhere.
 
+### Added
+
+- slskd-compatible event log, `GET /api/v0/events`, with
+  `DownloadFileComplete` and `DownloadDirectoryComplete` events, so Lidarr's
+  Tubifarry plugin can find finished files and stops logging "Failed to update
+  download items from Slskd" every few seconds.
+- slskd-compatible download batches, `POST /api/v0/transfers/downloads/batches`
+  and `GET /api/v0/transfers/downloads/batches/{id}`, honouring
+  `options.destination` and reporting per-file `failures`.
+- `batchId`, `startedAt`, `elapsedTime` and `remainingTime` on slskd-compatible
+  transfers, and `transfers.download.destination.subdirectory` in
+  `/api/v0/options`.
+
 ## [0.1.0] - 2026-10-31
 
 The first release. slskdpp is young: it is well covered by tests and has run

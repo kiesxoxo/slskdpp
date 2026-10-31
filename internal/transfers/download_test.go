@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -290,6 +291,44 @@ func TestRestartRequeues(t *testing.T) {
 	e.waitState(v.ID, StateRemoteQueued)
 	if n := len(e.m.List()); n != 1 {
 		t.Errorf("%d downloads after restart", n)
+	}
+}
+
+func TestBatchDestination(t *testing.T) {
+	e := newEnv(t)
+	b := Batch{ID: "b1", ExternalID: "ext", Destination: `Artist\Album: Live`}
+	views, err := e.m.EnqueueWith("bob", []FileRequest{{Path: `@@x\Album\CD1\01.flac`, Size: 1}, {Path: `@@x\Album\CD2\02.flac`, Size: 1}},
+		EnqueueOptions{Batch: &b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range views {
+		if v.Folder != "Artist/Album_ Live" || v.Batch != "b1" {
+			t.Errorf("download %+v", v)
+		}
+	}
+	if _, err := e.m.EnqueueWith("bob", []FileRequest{{Path: `@@x\a.mp3`, Size: 1}}, EnqueueOptions{Batch: &b}); !errors.Is(err, ErrBatchExists) {
+		t.Errorf("same batch again: %v", err)
+	}
+	if _, err := e.m.EnqueueWith("bob", []FileRequest{{Path: `@@x\a.mp3`, Size: 1}}, EnqueueOptions{Batch: &Batch{ID: "b2", Destination: "../up"}}); err == nil {
+		t.Error("escaping destination accepted")
+	}
+
+	e.start() // restart
+	if v, ok := e.m.Get(views[0].ID); !ok || v.Batch != "b1" {
+		t.Errorf("after restart %+v", v)
+	}
+	got, ok := e.m.Batch("b1")
+	if !ok || got.Username != "bob" || got.ExternalID != "ext" || got.Destination != "Artist/Album_ Live" || got.Created.IsZero() {
+		t.Errorf("batch %+v", got)
+	}
+	e.m.Remove(views[0].ID)
+	if _, ok := e.m.Batch("b1"); !ok {
+		t.Error("batch forgotten while a download is left")
+	}
+	e.m.Remove(views[1].ID)
+	if _, ok := e.m.Batch("b1"); ok {
+		t.Error("batch kept after its downloads were removed")
 	}
 }
 

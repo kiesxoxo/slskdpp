@@ -344,3 +344,104 @@ func TestSlskdCompat(t *testing.T) {
 }
 
 func compatVersionForTest() string { return "0.24.0" }
+
+// TestTubifarryCompat walks through what Lidarr's Tubifarry plugin does:
+// read the options, queue an album as a batch into a folder it names,
+// poll the transfers, and learn from the event log where files landed.
+func TestTubifarryCompat(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	_, fetcher, originals := pair(t, ctx, nil)
+	downloads := filepath.Join(fetcher.dir, "downloads")
+
+	var options struct {
+		Directories struct{ Downloads string }
+		Transfers   struct {
+			Download struct{ Destination struct{ Subdirectory string } }
+		}
+	}
+	fetcher.call("GET", "/api/v0/options", nil, &options)
+	if options.Directories.Downloads != downloads || options.Transfers.Download.Destination.Subdirectory != "${SOURCE_DIRECTORY}" {
+		t.Errorf("options %+v", options)
+	}
+	var events []struct{ ID, Timestamp, Type, Data string }
+	if code := fetcher.call("GET", "/api/v0/events?offset=0&limit=50", nil, &events); code != 200 || len(events) != 0 {
+		t.Fatalf("events before downloading: %d %v", code, events)
+	}
+
+	id := "0b6f7c2a-9d1e-4f3b-8a5c-6e7d8f9a0b1c"
+	dir := `Music\Artist\Testalbum`
+	var files []map[string]any
+	for name, data := range originals {
+		files = append(files, map[string]any{"filename": dir + `\` + name, "size": len(data)})
+	}
+	batch := map[string]any{"id": id, "username": "sharer", "files": files,
+		"options": map[string]any{"externalId": "lidarr-1", "destination": "Artist - Testalbum (2026)"}}
+	if code := fetcher.call("POST", "/api/v0/transfers/downloads/batches", batch, nil); code != 201 {
+		t.Fatalf("batch: %d", code)
+	}
+	var transfer struct {
+		Directories []struct {
+			Files []struct{ ID, State, BatchID, StartedAt, ElapsedTime string }
+		}
+	}
+	eventually(t, "the batch to download", 20*time.Second, func() bool {
+		fetcher.call("GET", "/api/v0/transfers/downloads/sharer", nil, &transfer)
+		if len(transfer.Directories) != 1 || len(transfer.Directories[0].Files) != 3 {
+			return false
+		}
+		for _, f := range transfer.Directories[0].Files {
+			if f.State != "Completed, Succeeded" {
+				return false
+			}
+		}
+		return true
+	})
+	for _, f := range transfer.Directories[0].Files {
+		if f.BatchID != id || f.StartedAt == "" || f.ElapsedTime == "" {
+			t.Errorf("transfer %+v", f)
+		}
+	}
+	local := filepath.Join(downloads, "Artist - Testalbum (2026)")
+	for name, want := range originals {
+		if got, _ := os.ReadFile(filepath.Join(local, name)); !bytes.Equal(got, want) {
+			t.Errorf("%s not downloaded intact into the destination", name)
+		}
+	}
+
+	eventually(t, "the completion events", 5*time.Second, func() bool {
+		fetcher.call("GET", "/api/v0/events?offset=0&limit=50", nil, &events)
+		return len(events) == 4
+	})
+	// Newest first: the directory, then its files.
+	if events[0].Type != "DownloadDirectoryComplete" {
+		t.Fatalf("events %+v", events)
+	}
+	var d struct{ LocalDirectoryName, RemoteDirectoryName, Username string }
+	json.Unmarshal([]byte(events[0].Data), &d)
+	if d.LocalDirectoryName != local || d.RemoteDirectoryName != dir || d.Username != "sharer" {
+		t.Errorf("directory event %s", events[0].Data)
+	}
+	for _, e := range events[1:] {
+		var f struct {
+			LocalFilename  string
+			RemoteFilename string
+			Transfer       struct{ Username, BatchID string }
+		}
+		json.Unmarshal([]byte(e.Data), &f)
+		want, ok := originals[filepath.Base(f.LocalFilename)]
+		got, _ := os.ReadFile(f.LocalFilename)
+		if e.Type != "DownloadFileComplete" || !ok || !bytes.Equal(got, want) || filepath.Dir(f.LocalFilename) != local ||
+			!strings.HasPrefix(f.RemoteFilename, dir+`\`) || f.Transfer.Username != "sharer" || f.Transfer.BatchID != id {
+			t.Errorf("file event %s %s", e.Type, e.Data)
+		}
+	}
+
+	var got struct {
+		Options struct{ ExternalID, Destination string }
+	}
+	if code := fetcher.call("GET", "/api/v0/transfers/downloads/batches/"+id, nil, &got); code != 200 ||
+		got.Options.Destination != "Artist - Testalbum (2026)" || got.Options.ExternalID != "lidarr-1" {
+		t.Errorf("batch: %d %+v", code, got)
+	}
+}
