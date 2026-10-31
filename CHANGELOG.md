@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- slskd's login for API clients: `POST /api/v0/session` trades the web
+  username and password for a token (a JWT valid for 7 days) to send as
+  `Authorization: Bearer <token>`. `GET /api/v0/session` checks a token and
+  `GET /api/v0/session/enabled` reports that login is required. Failed logins
+  count towards the same lockout as the web UI's.
+
 ## [0.2.0] - 2026-10-31
 
 ### Web UI

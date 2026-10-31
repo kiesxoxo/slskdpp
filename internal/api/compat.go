@@ -29,6 +29,9 @@ const compatVersion = "0.24.0"
 
 func (a *API) routesV0(mux *http.ServeMux) {
 	h := func(pattern string, fn http.HandlerFunc) { mux.HandleFunc(pattern, a.auth(fn)) }
+	mux.HandleFunc("POST /api/v0/session", a.v0Login)
+	mux.HandleFunc("GET /api/v0/session/enabled", a.v0SessionEnabled)
+	h("GET /api/v0/session", a.v0CheckSession)
 	h("GET /api/v0/application", a.v0Application)
 	h("GET /api/v0/application/version", a.v0Version)
 	h("GET /api/v0/options", a.v0Options)

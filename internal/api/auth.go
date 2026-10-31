@@ -90,6 +90,19 @@ func (a *API) verifySession(token string) (string, bool) {
 // that carries a key is judged by the key alone.
 func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A token from slskd's login stands in for the session cookie. It
+		// is sent by hand, never by the browser, so it needs no cross-site
+		// check. Anything else in the header is tried as an API key.
+		if tok := bearerToken(r); tok != "" {
+			if _, ok := a.verifyJWT(tok); ok {
+				next(w, r)
+				return
+			}
+			if strings.HasPrefix(tok, jwtHeader+".") {
+				writeError(w, http.StatusUnauthorized, "token expired or invalid")
+				return
+			}
+		}
 		if key := requestKey(r); key != "" {
 			if a.keys == nil || !a.keys.check(key) {
 				writeError(w, http.StatusUnauthorized, "invalid API key")
@@ -122,26 +135,42 @@ type credentials struct {
 	Password string `json:"password"`
 }
 
-func (a *API) login(w http.ResponseWriter, r *http.Request) {
+// checkLogin reads credentials and checks them against the web login,
+// rate limiting failures by IP. It writes the error response itself. With
+// rejectBlank, a blank username or password is a 400, as slskd answers,
+// and does not count as a failure.
+func (a *API) checkLogin(w http.ResponseWriter, r *http.Request, rejectBlank bool) (credentials, bool) {
+	var c credentials
 	ip := a.clientIP(r)
 	if wait := a.limiter.blocked(ip, a.now()); wait > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, "too many failed logins, try again later")
-		return
+		return c, false
 	}
-	var c credentials
 	if !readJSON(w, r, &c) {
-		return
+		return c, false
+	}
+	if rejectBlank && (strings.TrimSpace(c.Username) == "" || strings.TrimSpace(c.Password) == "") {
+		writeError(w, http.StatusBadRequest, "Username and/or Password missing or invalid")
+		return c, false
 	}
 	userOK := subtle.ConstantTimeCompare([]byte(c.Username), []byte(a.cfg.Username)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(c.Password), []byte(a.cfg.Password)) == 1
-	if !userOK || !passOK {
+	if !userOK || !passOK || a.cfg.Password == "" {
 		a.limiter.fail(ip, a.now())
 		a.log.Warn("failed web login", "ip", ip, "username", c.Username)
 		writeError(w, http.StatusUnauthorized, "wrong username or password")
-		return
+		return c, false
 	}
 	a.limiter.reset(ip)
+	return c, true
+}
+
+func (a *API) login(w http.ResponseWriter, r *http.Request) {
+	c, ok := a.checkLogin(w, r, false)
+	if !ok {
+		return
+	}
 	expires := a.now().Add(sessionTTL)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,

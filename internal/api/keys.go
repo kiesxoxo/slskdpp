@@ -157,10 +157,7 @@ func requestKey(r *http.Request) string {
 	if k := r.Header.Get("X-API-Key"); k != "" {
 		return k
 	}
-	if v := r.Header.Get("Authorization"); len(v) > 7 && strings.EqualFold(v[:7], "bearer ") {
-		return strings.TrimSpace(v[7:])
-	}
-	return ""
+	return bearerToken(r)
 }
 
 type ctxKey struct{}

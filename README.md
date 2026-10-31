@@ -303,8 +303,11 @@ event for testing an integration. The log is kept in the database, trimmed to
 the newest 100,000 events. slskdpp has no chat yet, so `PrivateMessageReceived`
 and `RoomMessageReceived` only appear when raised as samples.
 
-Only API key authentication is supported, not slskd's username and password
-sessions. Chat, rooms and slskd's other endpoints are not implemented.
+Tools can authenticate with an API key (`X-API-Key`, or `Authorization: Bearer`
+with the key), or log in like slskd: `POST /api/v0/session` with the web
+username and password returns a token that lasts 7 days, sent back as
+`Authorization: Bearer <token>`. A token has the same rights as logging in to
+the web UI. Chat, rooms and slskd's other endpoints are not implemented.
 
 ## Networking
 
