@@ -1,0 +1,71 @@
+name: Fuzz
+
+# Fuzzes the protocol decoders, which parse bytes from any peer, every
+# night. Each target keeps its generated corpus in the Actions cache, so
+# runs build on each other. A crashing input is uploaded as an artifact:
+# commit it under internal/protocol/testdata/fuzz/ and CI's go test runs
+# it from then on.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: How long to fuzz each target, such as 5m
+        default: 5m
+
+permissions:
+  contents: read
+
+jobs:
+  targets:
+    name: List fuzz targets
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: list
+        run: |
+          set -euo pipefail
+          targets=$(go test -list '^Fuzz' ./internal/protocol | grep '^Fuzz' | jq -Rnc '[inputs]')
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: ${{ matrix.target }}
+    needs: targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.targets.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: corpus
+        run: echo "dir=$(go env GOCACHE)/fuzz/github.com/kiesxoxo/slskdpp/internal/protocol/${{ matrix.target }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.corpus.outputs.dir }}
+          key: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-${{ matrix.target }}-
+      - name: Fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+        run: go test ./internal/protocol -run '^$' -fuzz "^$TARGET\$" -fuzztime "$FUZZTIME"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crasher-${{ matrix.target }}
+          path: internal/protocol/testdata/fuzz/${{ matrix.target }}
+          if-no-files-found: ignore

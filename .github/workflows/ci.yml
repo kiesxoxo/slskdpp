@@ -30,12 +30,9 @@ jobs:
             echo "Not gofmt-formatted:"; echo "$unformatted"; exit 1
           fi
       - run: go vet ./...
+      # Also runs the fuzz seeds and testdata/fuzz inputs as plain tests;
+      # the fuzzing itself is in fuzz.yml.
       - run: go test -race ./...
-      - name: Fuzz the protocol decoders briefly
-        run: |
-          for f in $(go test -list '^Fuzz' ./internal/protocol | grep '^Fuzz'); do
-            go test ./internal/protocol -run '^$' -fuzz "^$f\$" -fuzztime 20s
-          done
 
   vulns:
     name: Vulnerability scan
