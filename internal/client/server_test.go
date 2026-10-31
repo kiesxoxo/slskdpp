@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,5 +144,93 @@ func TestServerRelogged(t *testing.T) {
 	defer cancel()
 	if err := srv.Run(ctx); !errors.Is(err, ErrRelogged) {
 		t.Fatalf("Run = %v, want ErrRelogged", err)
+	}
+}
+
+func TestServerDisconnectAndConnect(t *testing.T) {
+	logins := make(chan int, 4)
+	addr := fakeServer(t, func(n int, c net.Conn) {
+		readCode(t, c)
+		acceptLogin(c)
+		logins <- n
+		// Stay connected until the client hangs up.
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		io.Copy(io.Discard, c)
+	})
+	srv := NewServer(ServerConfig{Addr: addr, Username: "tester", Password: "pw"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go srv.Run(ctx)
+	if err := srv.WaitLoggedIn(ctx); err != nil {
+		t.Fatal(err)
+	}
+	<-logins
+	if st := srv.Status(); !st.LoggedIn || st.Remote == nil || st.Paused || st.Addr != addr {
+		t.Errorf("connected status %+v", st)
+	}
+	if srv.Connect() {
+		t.Error("Connect while connected reported a retry")
+	}
+
+	srv.Disconnect()
+	for deadline := time.Now().Add(5 * time.Second); srv.LoggedIn(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("still logged in after Disconnect")
+		}
+	}
+	// It stays away, without reconnecting on its own.
+	select {
+	case n := <-logins:
+		t.Fatalf("logged in again (connection %d) while disconnected", n)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if st := srv.Status(); st.LoggedIn || !st.Paused || st.Remote != nil {
+		t.Errorf("disconnected status %+v", st)
+	}
+
+	if srv.Connect() {
+		t.Error("Connect after Disconnect reported a retry")
+	}
+	select {
+	case <-logins:
+	case <-ctx.Done():
+		t.Fatal("did not log in again after Connect")
+	}
+	if err := srv.WaitLoggedIn(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServerConnectRetriesAtOnce(t *testing.T) {
+	var mu sync.Mutex
+	up := false
+	addr := fakeServer(t, func(n int, c net.Conn) {
+		mu.Lock()
+		ok := up
+		mu.Unlock()
+		if !ok {
+			return // hang up: the client waits before retrying
+		}
+		readCode(t, c)
+		acceptLogin(c)
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		io.Copy(io.Discard, c)
+	})
+	srv := NewServer(ServerConfig{Addr: addr, Username: "tester", Password: "pw"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go srv.Run(ctx)
+	time.Sleep(200 * time.Millisecond) // the first attempt fails
+	mu.Lock()
+	up = true
+	mu.Unlock()
+	if !srv.Connect() {
+		t.Error("Connect while reconnecting did not report a retry")
+	}
+	// Without the retry, the backoff would make this take longer.
+	wait, stop := context.WithTimeout(ctx, minBackoff/2)
+	defer stop()
+	if err := srv.WaitLoggedIn(wait); err != nil {
+		t.Fatalf("not logged in soon after Connect: %v", err)
 	}
 }

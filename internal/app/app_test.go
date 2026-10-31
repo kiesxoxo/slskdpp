@@ -464,3 +464,142 @@ func TestTubifarryCompat(t *testing.T) {
 		}
 	}
 }
+
+// TestSlskdCompatMore covers the rest of the slskd API tools may use:
+// uploads, user details, our shares and the server connection.
+func TestSlskdCompatMore(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	sharer, fetcher, originals := pair(t, ctx, nil)
+	dir := `Music\Artist\Testalbum`
+
+	// Shares, as the sharer lists them.
+	var shares map[string][]struct {
+		ID, Alias, RemotePath string
+		Files, Directories    int
+	}
+	sharer.call("GET", "/api/v0/shares", nil, &shares)
+	if len(shares["local"]) != 1 || shares["local"][0].Alias != "Music" || shares["local"][0].Files != 3 {
+		t.Fatalf("shares %+v", shares)
+	}
+	var contents []struct {
+		Name  string
+		Files []struct{ Filename string }
+	}
+	sharer.call("GET", "/api/v0/shares/"+shares["local"][0].ID+"/contents", nil, &contents)
+	var names []string
+	for _, d := range contents {
+		names = append(names, fmt.Sprintf("%s:%d", d.Name, len(d.Files)))
+	}
+	if got := strings.Join(names, " "); got != `Music:0 Music\Artist:0 Music\Artist\Testalbum:3` {
+		t.Errorf("contents %s", got)
+	} else if !strings.HasPrefix(contents[2].Files[0].Filename, dir+`\`) {
+		t.Errorf("file %+v", contents[2].Files[0])
+	}
+
+	// User details, as the fetcher sees the sharer.
+	var status struct {
+		Presence     string
+		IsPrivileged bool
+	}
+	if code := fetcher.call("GET", "/api/v0/users/sharer/status", nil, &status); code != 200 || status.Presence != "Online" {
+		t.Errorf("status: %d %+v", code, status)
+	}
+	var ep struct {
+		Address string
+		Port    int
+	}
+	if code := fetcher.call("GET", "/api/v0/users/sharer/endpoint", nil, &ep); code != 200 || ep.Port != int(sharer.app.cfg.Soulseek.ListenPort) {
+		t.Errorf("endpoint: %d %+v", code, ep)
+	}
+	var info struct{ UploadSlots int }
+	if code := fetcher.call("GET", "/api/v0/users/sharer/info", nil, &info); code != 200 || info.UploadSlots == 0 {
+		t.Errorf("info: %d %+v", code, info)
+	}
+	if code := fetcher.call("GET", "/api/v0/users/sharer/browse", nil, nil); code != 200 {
+		t.Fatalf("browse: %d", code)
+	}
+	var progress struct {
+		BytesTransferred, Size int
+		PercentComplete        float64
+	}
+	if code := fetcher.call("GET", "/api/v0/users/sharer/browse/status", nil, &progress); code != 200 || progress.PercentComplete != 100 || progress.Size == 0 {
+		t.Errorf("browse status: %d %+v", code, progress)
+	}
+
+	// Uploads, as the sharer sees them.
+	var queue []map[string]any
+	for name, data := range originals {
+		queue = append(queue, map[string]any{"filename": dir + `\` + name, "size": len(data)})
+	}
+	if code := fetcher.call("POST", "/api/v0/transfers/downloads/sharer", queue, nil); code != 201 {
+		t.Fatalf("enqueue: %d", code)
+	}
+	var uploads []struct {
+		Username    string
+		Directories []struct {
+			Directory string
+			Files     []struct{ ID, State, Direction string }
+		}
+	}
+	eventually(t, "the uploads", 20*time.Second, func() bool {
+		sharer.call("GET", "/api/v0/transfers/uploads", nil, &uploads)
+		if len(uploads) != 1 || len(uploads[0].Directories) != 1 || len(uploads[0].Directories[0].Files) != 3 {
+			return false
+		}
+		for _, f := range uploads[0].Directories[0].Files {
+			if f.State != "Completed, Succeeded" {
+				return false
+			}
+		}
+		return true
+	})
+	up := uploads[0].Directories[0].Files[0]
+	if uploads[0].Username != "fetcher" || uploads[0].Directories[0].Directory != dir || up.Direction != "Upload" {
+		t.Errorf("uploads %+v", uploads)
+	}
+	if code := sharer.call("GET", "/api/v0/transfers/uploads/fetcher/"+up.ID, nil, nil); code != 200 {
+		t.Errorf("one upload: %d", code)
+	}
+	if code := sharer.call("DELETE", "/api/v0/transfers/uploads/all/completed", nil, nil); code != 204 {
+		t.Errorf("clear uploads: %d", code)
+	}
+	if code := sharer.call("GET", "/api/v0/transfers/uploads/fetcher", nil, nil); code != 404 {
+		t.Errorf("uploads after clearing: %d", code)
+	}
+
+	// The server connection.
+	type server struct {
+		State                       string
+		IsLoggedIn, IsTransitioning bool
+		IPEndPoint                  *struct{ Port int }
+	}
+	var srv server
+	fetcher.call("GET", "/api/v0/server", nil, &srv)
+	if !srv.IsLoggedIn || srv.State != "Connected, LoggedIn" || srv.IPEndPoint == nil {
+		t.Errorf("server %+v", srv)
+	}
+	if code := fetcher.call("DELETE", "/api/v0/server", "maintenance", nil); code != 204 {
+		t.Fatalf("disconnect: %d", code)
+	}
+	eventually(t, "the disconnection", 5*time.Second, func() bool {
+		srv = server{}
+		fetcher.call("GET", "/api/v0/server", nil, &srv)
+		return srv.State == "Disconnected"
+	})
+	if code := fetcher.call("PUT", "/api/v0/server", nil, nil); code != 200 {
+		t.Fatalf("connect: %d", code)
+	}
+	eventually(t, "the reconnection", 10*time.Second, func() bool {
+		fetcher.call("GET", "/api/v0/server", nil, &srv)
+		return srv.IsLoggedIn
+	})
+	var events []struct{ Type, Data string }
+	eventually(t, "the connection events", 5*time.Second, func() bool {
+		fetcher.call("GET", "/api/v0/events?limit=2", nil, &events)
+		return len(events) == 2 && events[0].Type == "SoulseekClientConnected"
+	})
+	if events[1].Type != "SoulseekClientDisconnected" || !strings.Contains(events[1].Data, `"message":"maintenance"`) {
+		t.Errorf("events %+v", events)
+	}
+}

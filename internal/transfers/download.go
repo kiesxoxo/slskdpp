@@ -224,6 +224,9 @@ type Manager struct {
 	// keyed by old user and folder, so the folder's other files try the
 	// same place before searching.
 	hints map[string]sourceHint
+	// places are callers of PlaceInQueue waiting for an answer, by
+	// hintKey-style user and remote path.
+	places map[string][]chan uint32
 }
 
 type sourceHint struct{ user, folder string }
@@ -410,6 +413,47 @@ func (m *Manager) EnqueueWith(username string, files []FileRequest, opts Enqueue
 	go m.net.WatchUser(username)
 	m.wake()
 	return out, nil
+}
+
+// placeTimeout bounds how long PlaceInQueue waits for the peer.
+const placeTimeout = 30 * time.Second
+
+// PlaceInQueue asks the peer where a download stands in their queue.
+func (m *Manager) PlaceInQueue(ctx context.Context, id int64) (uint32, error) {
+	m.mu.Lock()
+	d, ok := m.downloads[id]
+	if !ok || d.State.Done() {
+		m.mu.Unlock()
+		return 0, ErrNotFound
+	}
+	user, file := d.Username, d.Filename
+	key := user + "\x00" + file
+	ch := make(chan uint32, 1)
+	if m.places == nil {
+		m.places = map[string][]chan uint32{}
+	}
+	m.places[key] = append(m.places[key], ch)
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		if rest := slices.DeleteFunc(m.places[key], func(c chan uint32) bool { return c == ch }); len(rest) > 0 {
+			m.places[key] = rest
+		} else {
+			delete(m.places, key)
+		}
+		m.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(ctx, placeTimeout)
+	defer cancel()
+	if err := m.net.SendPeer(ctx, user, protocol.PlaceInQueueRequest{Filename: file}); err != nil {
+		return 0, err
+	}
+	select {
+	case place := <-ch:
+		return place, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 // Batch returns a batch queued through EnqueueWith.
@@ -617,6 +661,11 @@ func (m *Manager) HandlePeer(username string, msg any) bool {
 		m.transferRequest(username, v)
 	case protocol.PlaceInQueueResponse:
 		m.mu.Lock()
+		key := username + "\x00" + v.Filename
+		for _, ch := range m.places[key] {
+			ch <- v.Place
+		}
+		delete(m.places, key)
 		if d := m.activeLocked(username, v.Filename); d != nil && d.State == StateRemoteQueued {
 			d.queuePlace = v.Place
 			m.cfg.OnUpdate(d.view())

@@ -526,6 +526,16 @@ func (u *Uploads) find(id int64) (*Upload, int) {
 	return nil, -1
 }
 
+// Get returns one upload.
+func (u *Uploads) Get(id int64) (UploadView, bool) {
+	for _, v := range u.List() {
+		if v.ID == id {
+			return v, true
+		}
+	}
+	return UploadView{}, false
+}
+
 // Cancel stops an upload and tells the peer.
 func (u *Uploads) Cancel(id int64) error {
 	u.mu.Lock()

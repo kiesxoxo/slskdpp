@@ -131,6 +131,17 @@ func (s *Server) serve(c net.Conn) {
 				w.IP(ip)
 				w.Uint32(port)
 			})
+		case protocol.CodeGetUserStatus:
+			target := r.String()
+			status := protocol.StatusOffline
+			if s.user(target) != nil {
+				status = protocol.StatusOnline
+			}
+			me.send(protocol.CodeGetUserStatus, func(w *protocol.Writer) {
+				w.String(target)
+				w.Uint32(uint32(status))
+				w.Bool(false)
+			})
 		case protocol.CodeConnectToPeer:
 			token, target, typ := r.Uint32(), r.String(), r.String()
 			u := s.user(target)

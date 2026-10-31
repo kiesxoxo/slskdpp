@@ -332,6 +332,39 @@ func TestBatchDestination(t *testing.T) {
 	}
 }
 
+func TestPlaceInQueue(t *testing.T) {
+	e := newEnv(t)
+	v := e.enqueue("bob", remote, 1000)
+	e.expect("bob", protocol.QueueUpload{Filename: remote})
+	got := make(chan uint32, 1)
+	go func() {
+		place, err := e.m.PlaceInQueue(context.Background(), v.ID)
+		if err != nil {
+			t.Error(err)
+		}
+		got <- place
+	}()
+	e.expect("bob", protocol.PlaceInQueueRequest{Filename: remote})
+	e.m.HandlePeer("bob", protocol.PlaceInQueueResponse{Filename: remote, Place: 17})
+	select {
+	case p := <-got:
+		if p != 17 {
+			t.Errorf("place %d", p)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no answer")
+	}
+	if _, err := e.m.PlaceInQueue(context.Background(), 12345); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown download: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	e.m.Cancel(v.ID)
+	if _, err := e.m.PlaceInQueue(ctx, v.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("finished download: %v", err)
+	}
+}
+
 func TestUnknownTransferDenied(t *testing.T) {
 	e := newEnv(t)
 	e.m.HandlePeer("mallory", protocol.TransferRequest{Direction: protocol.TransferUpload, Token: 3, Filename: `@@m\x.mp3`, Size: 10})

@@ -72,6 +72,22 @@ type Server struct {
 	sendCh chan []byte   // nil while logged out
 	ready  chan struct{} // closed while logged in
 	login  protocol.LoginResponse
+	// Disconnect pauses the session until Connect.
+	paused     bool
+	resume     chan struct{} // signalled by Connect while paused
+	retryNow   chan struct{} // cuts a reconnect wait short
+	endSession context.CancelFunc
+	connecting bool
+	remote     net.Addr // the server's address while connected
+}
+
+// ServerStatus describes the server connection.
+type ServerStatus struct {
+	Addr       string   // as configured
+	Remote     net.Addr // resolved, while connected
+	Connecting bool     // dialling or logging in
+	LoggedIn   bool
+	Paused     bool // disconnected on purpose
 }
 
 // NewServer creates a server session. handler receives every decoded
@@ -86,10 +102,69 @@ func NewServer(cfg ServerConfig, handler func(any)) *Server {
 		handler = func(any) {}
 	}
 	return &Server{
-		cfg:     cfg,
-		log:     log.With("component", "server"),
-		handler: handler,
-		ready:   make(chan struct{}),
+		cfg:      cfg,
+		log:      log.With("component", "server"),
+		handler:  handler,
+		ready:    make(chan struct{}),
+		resume:   make(chan struct{}, 1),
+		retryNow: make(chan struct{}, 1),
+	}
+}
+
+// Status describes the connection now.
+func (s *Server) Status() ServerStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ServerStatus{Addr: s.cfg.Addr, Remote: s.remote, Connecting: s.connecting, LoggedIn: s.sendCh != nil, Paused: s.paused}
+}
+
+// Disconnect ends the session and stays disconnected until Connect.
+func (s *Server) Disconnect() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = true
+	if s.endSession != nil {
+		s.endSession()
+	}
+}
+
+// Connect undoes Disconnect. While reconnecting after a dropped session it
+// retries at once instead, and reports that it did.
+func (s *Server) Connect() (retried bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch {
+	case s.paused:
+		s.paused = false
+		signal(s.resume)
+	case s.sendCh == nil:
+		signal(s.retryNow)
+		return true
+	}
+	return false
+}
+
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// waitWhilePaused blocks while the session is paused.
+func (s *Server) waitWhilePaused(ctx context.Context) error {
+	for {
+		s.mu.Lock()
+		paused := s.paused
+		s.mu.Unlock()
+		if !paused {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.resume:
+		}
 	}
 }
 
@@ -98,10 +173,21 @@ func NewServer(cfg ServerConfig, handler func(any)) *Server {
 func (s *Server) Run(ctx context.Context) error {
 	backoff := minBackoff
 	for {
+		if err := s.waitWhilePaused(ctx); err != nil {
+			return err
+		}
 		start := time.Now()
 		err := s.session(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		s.mu.Lock()
+		paused := s.paused
+		s.mu.Unlock()
+		if paused {
+			s.log.Info("disconnected from the server on request")
+			backoff = minBackoff
+			continue
 		}
 		var le *LoginError
 		if errors.As(err, &le) || errors.Is(err, ErrRelogged) {
@@ -116,6 +202,7 @@ func (s *Server) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(wait):
+		case <-s.retryNow:
 		}
 		backoff = min(backoff*2, maxBackoff)
 	}
@@ -166,15 +253,30 @@ func (s *Server) Send(m protocol.ServerRequest) error {
 
 // session runs one connection from dial to disconnect.
 func (s *Server) session(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.mu.Lock()
+	if s.paused {
+		s.mu.Unlock()
+		return nil
+	}
+	s.endSession, s.connecting = cancel, true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.endSession, s.connecting, s.remote = nil, false, nil
+		s.mu.Unlock()
+	}()
 	conn, resp, err := dialAndLogin(ctx, s.cfg, s.handler)
+	s.mu.Lock()
+	s.connecting = false
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	s.log.Info("logged in", "user", s.cfg.Username, "ip", resp.OwnIP, "greeting", resp.Greeting)
 
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	defer stop()
 
@@ -189,6 +291,7 @@ func (s *Server) session(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.sendCh = sendCh
+	s.remote = conn.RemoteAddr()
 	s.login = resp
 	close(s.ready)
 	s.mu.Unlock()

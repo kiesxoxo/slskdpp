@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -33,6 +35,59 @@ import (
 type fakeNet struct {
 	loggedIn bool
 	token    uint32
+
+	mu     sync.Mutex
+	paused bool // disconnected through the API
+}
+
+// UserStatus: "ghost" is offline, "vip" privileged, everyone else online.
+func (n *fakeNet) UserStatus(ctx context.Context, u string) (protocol.UserStatusResponse, error) {
+	st := protocol.UserStatusResponse{Username: u, Status: protocol.StatusOnline, Privileged: u == "vip"}
+	if u == "ghost" {
+		st.Status = protocol.StatusOffline
+	}
+	return st, nil
+}
+
+func (n *fakeNet) PeerAddress(ctx context.Context, u string) (protocol.PeerAddress, error) {
+	if u == "ghost" {
+		return protocol.PeerAddress{}, client.ErrUserOffline
+	}
+	return protocol.PeerAddress{Username: u, IP: netip.MustParseAddr("192.0.2.7"), Port: 2234}, nil
+}
+
+// BrowseStatus: a browse of "bob" is a quarter done.
+func (n *fakeNet) BrowseStatus(u string) (client.BrowseProgress, bool) {
+	if u != "bob" {
+		return client.BrowseProgress{}, false
+	}
+	return client.BrowseProgress{Username: u, Bytes: 50, Size: 200}, true
+}
+
+func (n *fakeNet) ServerStatus() client.ServerStatus {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	st := client.ServerStatus{Addr: "server.example:2242", LoggedIn: n.loggedIn && !n.paused, Paused: n.paused}
+	if st.LoggedIn {
+		st.Remote = &net.TCPAddr{IP: net.IPv4(198, 51, 100, 1), Port: 2242}
+	}
+	return st
+}
+
+func (n *fakeNet) Connect() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.paused {
+		n.paused = false
+		return false
+	}
+	return !n.loggedIn
+}
+
+func (n *fakeNet) Disconnect() {
+	n.mu.Lock()
+	n.paused = true
+	n.mu.Unlock()
 }
 
 func (n *fakeNet) Username() string            { return "me" }

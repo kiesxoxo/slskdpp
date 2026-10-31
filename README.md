@@ -269,10 +269,12 @@ shows you its output.
 ## Using it with soularr and other slskd tools
 
 slskdpp answers the parts of [slskd](https://github.com/slskd/slskd)'s API that
-tools built on it use: searches, search responses, user directories and
-browsing, download transfers and batches, the event log of finished downloads,
-and application version and options. These live under `/api/v0` with slskd's
-field names and states.
+tools built on it use: searches and their responses; browsing users, their
+folders, browse progress, details, online status and address; downloads,
+batches and a download's place in the remote queue; uploads; the event log;
+your own shares (listing, contents, rescanning); connecting to and
+disconnecting from the server; and the application version and options. These
+live under `/api/v0` with slskd's field names and states.
 
 For soularr, set the `[Slskd]` section as you would for slskd:
 

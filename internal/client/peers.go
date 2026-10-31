@@ -60,6 +60,9 @@ type Peers struct {
 	// this code from username. Unsolicited browse, folder and user info
 	// responses are dropped unread. Nil accepts everything.
 	wants func(username string, code uint32) bool
+	// browseProgress, if set, follows share lists as they arrive, with
+	// bytes received and the total, header included.
+	browseProgress func(username string, got, size uint64)
 
 	inbound    *inboundLimiter
 	bigDecodes chan struct{}
@@ -478,6 +481,12 @@ func (p *Peers) readOne(r io.Reader, username string) error {
 			return fmt.Errorf("gave up waiting to read a %d byte message", n)
 		}
 	}
+	if code == protocol.CodeSharedFileListResponse && p.browseProgress != nil {
+		size := uint64(n) + 4 // with the length prefix
+		cr := &countingReader{r: r, got: 8, fn: func(got uint64) { p.browseProgress(username, got, size) }}
+		cr.fn(cr.got)
+		r = cr
+	}
 	payload, err := protocol.ReadBody(r, n-4)
 	if err != nil {
 		return err
@@ -548,4 +557,20 @@ type idleReader struct{ conn net.Conn }
 func (r idleReader) Read(b []byte) (int, error) {
 	r.conn.SetReadDeadline(time.Now().Add(peerIdleTimeout))
 	return r.conn.Read(b)
+}
+
+// countingReader reports the running total of bytes read.
+type countingReader struct {
+	r   io.Reader
+	got uint64
+	fn  func(got uint64)
+}
+
+func (c *countingReader) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	if n > 0 {
+		c.got += uint64(n)
+		c.fn(c.got)
+	}
+	return n, err
 }

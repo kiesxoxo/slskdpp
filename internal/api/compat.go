@@ -51,8 +51,30 @@ func (a *API) routesV0(mux *http.ServeMux) {
 	h("GET /api/v0/transfers/downloads/{username}/{id}", a.v0Download)
 	h("DELETE /api/v0/transfers/downloads/{username}/{id}", a.v0CancelDownload)
 
+	h("GET /api/v0/transfers/downloads/{username}/{id}/position", a.v0Position)
+	h("GET /api/v0/transfers/uploads", a.v0Uploads)
+	h("DELETE /api/v0/transfers/uploads/all/completed", a.v0ClearUploads)
+	h("GET /api/v0/transfers/uploads/{username}", a.v0UserUploads)
+	h("GET /api/v0/transfers/uploads/{username}/{id}", a.v0Upload)
+	h("DELETE /api/v0/transfers/uploads/{username}/{id}", a.v0CancelUpload)
+
 	h("GET /api/v0/users/{username}/browse", a.v0Browse)
+	h("GET /api/v0/users/{username}/browse/status", a.v0BrowseStatus)
 	h("POST /api/v0/users/{username}/directory", a.v0Directory)
+	h("GET /api/v0/users/{username}/info", a.v0UserInfo)
+	h("GET /api/v0/users/{username}/status", a.v0UserStatus)
+	h("GET /api/v0/users/{username}/endpoint", a.v0UserEndpoint)
+
+	h("GET /api/v0/server", a.v0GetServer)
+	h("PUT /api/v0/server", a.v0Connect)
+	h("DELETE /api/v0/server", a.v0Disconnect)
+
+	h("GET /api/v0/shares", a.v0Shares)
+	h("PUT /api/v0/shares", a.v0Rescan)
+	h("DELETE /api/v0/shares", a.v0CancelScan)
+	h("GET /api/v0/shares/contents", a.v0AllShareContents)
+	h("GET /api/v0/shares/{id}", a.v0Share)
+	h("GET /api/v0/shares/{id}/contents", a.v0ShareContents)
 }
 
 // v0JSON writes v as slskd does: plain JSON, no envelope.
@@ -63,15 +85,9 @@ func (a *API) v0Version(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) v0Application(w http.ResponseWriter, r *http.Request) {
-	connected := a.net.LoggedIn()
 	v0JSON(w, r, http.StatusOK, map[string]any{
 		"version": map[string]any{"full": compatVersion, "current": compatVersion, "isUpdateAvailable": false},
-		"server": map[string]any{
-			"username":    a.net.Username(),
-			"isConnected": connected,
-			"isLoggedIn":  connected,
-			"state":       map[bool]string{true: "Connected, LoggedIn", false: "Disconnected"}[connected],
-		},
+		"server":  a.v0Server(),
 	})
 }
 
@@ -484,15 +500,24 @@ func v0UploadFile(u transfers.UploadView, now time.Time) map[string]any {
 // v0Group groups downloads into slskd's per-user transfers, each with
 // its remote directories.
 func v0Group(views []transfers.View, now time.Time) []map[string]any {
+	files := make([]map[string]any, len(views))
+	for i, v := range views {
+		files[i] = v0File(v, now)
+	}
+	return v0GroupFiles(files)
+}
+
+// v0GroupFiles groups slskd transfers by user and remote directory.
+func v0GroupFiles(files []map[string]any) []map[string]any {
 	type dirKey struct{ user, dir string }
 	dirs := map[dirKey][]map[string]any{}
 	var order []dirKey
-	for _, v := range views {
-		k := dirKey{v.Username, remoteDir(v.Filename)}
+	for _, f := range files {
+		k := dirKey{f["username"].(string), remoteDir(f["filename"].(string))}
 		if _, ok := dirs[k]; !ok {
 			order = append(order, k)
 		}
-		dirs[k] = append(dirs[k], v0File(v, now))
+		dirs[k] = append(dirs[k], f)
 	}
 	var users []string
 	byUser := map[string][]map[string]any{}
@@ -571,13 +596,30 @@ func (a *API) v0Enqueue(w http.ResponseWriter, r *http.Request) {
 // v0Find looks a download up by ID alone: after a source switch its user
 // is no longer the one the client queued it from.
 func (a *API) v0Find(w http.ResponseWriter, r *http.Request) (transfers.View, bool) {
-	if id, ok := v0ParseTransferID(strings.ToLower(r.PathValue("id"))); ok {
-		if v, ok := a.downloads.Get(id); ok {
-			return v, true
-		}
+	id, ok := v0TransferIDFrom(w, r)
+	if !ok {
+		return transfers.View{}, false
+	}
+	if v, ok := a.downloads.Get(id); ok {
+		return v, true
 	}
 	writeError(w, http.StatusNotFound, "no such transfer")
 	return transfers.View{}, false
+}
+
+// v0TransferIDFrom reads a transfer ID from the path. Like slskd, it
+// answers 400 when the ID is not a GUID at all; a GUID that is not one of
+// ours has id -1, which matches nothing.
+func v0TransferIDFrom(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	s := strings.ToLower(r.PathValue("id"))
+	if !isUUID(s) {
+		writeError(w, http.StatusBadRequest, "id must be a GUID")
+		return 0, false
+	}
+	if id, ok := v0ParseTransferID(s); ok {
+		return id, true
+	}
+	return -1, true
 }
 
 func (a *API) v0Download(w http.ResponseWriter, r *http.Request) {
@@ -626,12 +668,19 @@ var v0AttrKeys = map[uint32]string{
 
 // v0Dir lists a directory as slskd does: bare file names, attributes both
 // as a list and as keys.
-func v0Dir(d protocol.Directory) map[string]any {
+func v0Dir(d protocol.Directory) map[string]any { return v0DirNamed(d, false) }
+
+// v0DirNamed is v0Dir with, if full is set, file names as full paths, as
+// slskd lists its own shares.
+func v0DirNamed(d protocol.Directory, full bool) map[string]any {
 	files := make([]map[string]any, 0, len(d.Files))
 	for _, f := range d.Files {
 		name := f.Name
 		if i := strings.LastIndexAny(name, `\/`); i >= 0 {
 			name = name[i+1:]
+		}
+		if full {
+			name = protocol.FilePath(d.Name, name)
 		}
 		attrs := make([]map[string]any, 0, len(f.Attrs))
 		file := map[string]any{"filename": name, "size": f.Size, "code": 1, "extension": search.ConvertFile(f).Ext}

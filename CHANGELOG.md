@@ -28,6 +28,18 @@
   `DownloadDirectoryComplete`, `UploadFileComplete`, `SoulseekClientConnected`
   and `SoulseekClientDisconnected` events, kept in the database.
 - `POST /api/v0/events/{type}` raises a sample event of any slskd type.
+- More of slskd's API: uploads (`/api/v0/transfers/uploads`, listing,
+  cancelling, clearing), a download's place in the remote queue
+  (`…/{id}/position`), user info, status, endpoint and browse progress
+  (`/api/v0/users/{username}/…`), the server connection (`GET`, `PUT` to
+  connect, `DELETE` to disconnect `/api/v0/server`), and shares (`GET
+  /api/v0/shares`, `/shares/{id}`, `/shares/contents`, `/shares/{id}/contents`,
+  `PUT` to rescan, `DELETE` to cancel a scan).
+
+### Changed
+
+- slskd-compatible transfer endpoints answer 400, as slskd does, when the ID
+  is not a GUID.
 - slskd-compatible download batches, `POST /api/v0/transfers/downloads/batches`
   and `GET /api/v0/transfers/downloads/batches/{id}`, honouring
   `options.destination` and reporting per-file `failures`.

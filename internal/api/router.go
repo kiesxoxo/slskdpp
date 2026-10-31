@@ -14,8 +14,10 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/hooks"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
@@ -32,6 +34,12 @@ type Network interface {
 	Browse(ctx context.Context, username string) (protocol.SharedFileListResponse, error)
 	FolderContents(ctx context.Context, username, folder string) (protocol.FolderContentsResponse, error)
 	UserInfo(ctx context.Context, username string) (protocol.UserInfoResponse, error)
+	UserStatus(ctx context.Context, username string) (protocol.UserStatusResponse, error)
+	PeerAddress(ctx context.Context, username string) (protocol.PeerAddress, error)
+	BrowseStatus(username string) (client.BrowseProgress, bool)
+	ServerStatus() client.ServerStatus
+	Connect() bool
+	Disconnect()
 }
 
 type Config struct {
@@ -82,8 +90,11 @@ type API struct {
 	keys      *keyring
 	v0        v0Searches
 	v0Events  *v0Events
-	limiter   *loginLimiter
-	now       func() time.Time
+	// v0DisconnectMsg is the reason given to the latest DELETE
+	// /api/v0/server, for the SoulseekClientDisconnected event.
+	v0DisconnectMsg atomic.Pointer[string]
+	limiter         *loginLimiter
+	now             func() time.Time
 }
 
 // New returns the HTTP handler for the API and UI.

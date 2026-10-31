@@ -205,7 +205,11 @@ func (a *API) watchV0Events(sub *events.Sub) {
 				if d.Connected {
 					a.v0Record(v0EventClientConnected, a.now(), map[string]any{})
 				} else {
-					a.v0Record(v0EventClientDisconnected, a.now(), map[string]any{"message": v0DisconnectedMessage, "exception": nil})
+					msg := v0DisconnectedMessage
+					if m := a.v0DisconnectMsg.Swap(nil); m != nil {
+						msg = *m
+					}
+					a.v0Record(v0EventClientDisconnected, a.now(), map[string]any{"message": msg, "exception": nil})
 				}
 			}
 		}

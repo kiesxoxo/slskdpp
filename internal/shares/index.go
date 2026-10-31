@@ -73,6 +73,7 @@ type Index struct {
 	watchErr bool
 	dirty    map[string]bool // changed local folders waiting for a rescan
 	kick     chan struct{}
+	stopScan context.CancelFunc // ends the scan under way
 }
 
 // Stats sums up what is shared.
@@ -319,7 +320,15 @@ func (x *Index) Run(ctx context.Context) {
 		case <-rescan.C:
 			x.Rescan()
 		case <-x.kick:
-			x.scanDirty(ctx)
+			sctx, cancel := context.WithCancel(ctx)
+			x.mu.Lock()
+			x.stopScan = cancel
+			x.mu.Unlock()
+			x.scanDirty(sctx)
+			x.mu.Lock()
+			x.stopScan = nil
+			x.mu.Unlock()
+			cancel()
 		}
 	}
 }
@@ -383,9 +392,15 @@ func (x *Index) scanDirty(ctx context.Context) {
 		}
 	}
 	changed := false
-	for _, d := range todo {
+	for i, d := range todo {
 		if ctx.Err() != nil {
-			return
+			// Cancelled: leave the rest for the next scan.
+			x.mu.Lock()
+			for _, d := range todo[i:] {
+				x.dirty[d] = true
+			}
+			x.mu.Unlock()
+			break
 		}
 		r, ok := x.rootOf(d)
 		if !ok {
@@ -399,7 +414,11 @@ func (x *Index) scanDirty(ctx context.Context) {
 			d = filepath.Dir(d)
 		}
 		c, err := x.scan(ctx, r, d)
-		if err != nil {
+		if err != nil && ctx.Err() != nil {
+			x.mu.Lock()
+			x.dirty[d] = true
+			x.mu.Unlock()
+		} else if err != nil {
 			x.log.Warn("scanning share", "share", r.Alias, "dir", d, "err", err)
 		}
 		changed = changed || c
@@ -826,6 +845,27 @@ func (x *Index) buildBrowse() (protocol.Encoded, error) {
 		return protocol.Encoded{}, err
 	}
 	return protocol.Encoded{Code: protocol.CodeSharedFileListResponse, Payload: out.Bytes()}, nil
+}
+
+// CancelScan stops the scan under way, reporting whether there was one.
+// The folders it had not finished wait for the next scan.
+func (x *Index) CancelScan() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if !x.stats.Scanning || x.stopScan == nil {
+		return false
+	}
+	x.stopScan()
+	return true
+}
+
+// Contents lists every shared folder with its files, or only those of the
+// share with the given alias.
+func (x *Index) Contents(alias string) ([]protocol.Directory, error) {
+	if alias == "" {
+		return x.listDirs("")
+	}
+	return x.FolderContents(alias)
 }
 
 // FolderContents lists a shared folder and its subfolders.

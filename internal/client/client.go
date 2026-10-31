@@ -49,7 +49,18 @@ type Client struct {
 
 	mu      sync.Mutex
 	waiters map[waitKey][]chan any
+	browses map[string]BrowseProgress // share lists being received, by user
 }
+
+// BrowseProgress is how much of a user's share list has arrived.
+type BrowseProgress struct {
+	Username string
+	Bytes    uint64 // received so far
+	Size     uint64 // 0 until the response starts arriving
+}
+
+// browseKept is how long a finished browse's progress stays readable.
+const browseKept = 5 * time.Second
 
 // waitKey identifies the response a request is waiting for.
 type waitKey struct {
@@ -74,7 +85,7 @@ func New(cfg ServerConfig, h Handlers) *Client {
 	if h.Search == nil {
 		h.Search = func(protocol.SearchRequest) {}
 	}
-	c := &Client{h: h, waiters: make(map[waitKey][]chan any)}
+	c := &Client{h: h, waiters: make(map[waitKey][]chan any), browses: make(map[string]BrowseProgress)}
 	c.tokens.Store(rand.Uint32N(1 << 30))
 	c.srv = NewServer(cfg, c.onServer)
 	c.srv.onState = c.onState
@@ -82,6 +93,7 @@ func New(cfg ServerConfig, h Handlers) *Client {
 	c.distrib = newDistrib(c, cfg.Logger)
 	c.peers = newPeers(cfg.Username, cfg.ListenPort, cfg.Logger, c.srv, c.NewToken, c.onPeer, h.File)
 	c.peers.wants = c.awaiting
+	c.peers.browseProgress = c.onBrowseProgress
 	return c
 }
 
@@ -163,6 +175,14 @@ func (c *Client) SendPeer(ctx context.Context, username string, m protocol.PeerM
 // Browse fetches a user's complete share list.
 func (c *Client) Browse(ctx context.Context, username string) (protocol.SharedFileListResponse, error) {
 	key := waitKey{username, protocol.CodeSharedFileListResponse, 0}
+	c.mu.Lock()
+	c.browses[username] = BrowseProgress{Username: username}
+	c.mu.Unlock()
+	defer time.AfterFunc(browseKept, func() {
+		c.mu.Lock()
+		delete(c.browses, username)
+		c.mu.Unlock()
+	})
 	m, err := c.request(ctx, username, protocol.SharedFileListRequest{}, key)
 	if err != nil {
 		return protocol.SharedFileListResponse{}, err
@@ -191,8 +211,61 @@ func (c *Client) UserInfo(ctx context.Context, username string) (protocol.UserIn
 	return m.(protocol.UserInfoResponse), nil
 }
 
+// BrowseStatus reports the progress of a browse of username that is under
+// way or finished in the last few seconds.
+func (c *Client) BrowseStatus(username string) (BrowseProgress, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p, ok := c.browses[username]
+	return p, ok
+}
+
+func (c *Client) onBrowseProgress(username string, got, size uint64) {
+	c.mu.Lock()
+	if _, ok := c.browses[username]; ok {
+		c.browses[username] = BrowseProgress{Username: username, Bytes: got, Size: size}
+	}
+	c.mu.Unlock()
+}
+
+// UserStatus asks the server whether username is online.
+func (c *Client) UserStatus(ctx context.Context, username string) (protocol.UserStatusResponse, error) {
+	key := waitKey{username, protocol.CodeGetUserStatus, 0}
+	m, err := c.await(ctx, key, func(context.Context) error { return c.srv.Send(protocol.GetUserStatus{Username: username}) })
+	if err != nil {
+		return protocol.UserStatusResponse{}, err
+	}
+	return m.(protocol.UserStatusResponse), nil
+}
+
+// PeerAddress asks the server where username listens. It fails with
+// ErrUserOffline when the server does not know.
+func (c *Client) PeerAddress(ctx context.Context, username string) (protocol.PeerAddress, error) {
+	a, err := c.peers.peerAddress(ctx, username)
+	if err == nil && a.Unknown() {
+		err = ErrUserOffline
+	}
+	return a, err
+}
+
+// ServerStatus describes the server connection.
+func (c *Client) ServerStatus() ServerStatus { return c.srv.Status() }
+
+// Disconnect leaves the server until Connect.
+func (c *Client) Disconnect() { c.srv.Disconnect() }
+
+// Connect undoes Disconnect, or retries at once if reconnecting, which it
+// then reports.
+func (c *Client) Connect() bool { return c.srv.Connect() }
+
 // request sends req to username and waits for the response matching key.
 func (c *Client) request(ctx context.Context, username string, req protocol.PeerMessage, key waitKey) (any, error) {
+	return c.await(ctx, key, func(ctx context.Context) error { return c.peers.Send(ctx, username, req) })
+}
+
+// await registers for the response matching key, sends the request and
+// waits.
+func (c *Client) await(ctx context.Context, key waitKey, send func(context.Context) error) (any, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	ch := make(chan any, 1)
@@ -208,7 +281,7 @@ func (c *Client) request(ctx context.Context, username string, req protocol.Peer
 		}
 		c.mu.Unlock()
 	}()
-	if err := c.peers.Send(ctx, username, req); err != nil {
+	if err := send(ctx); err != nil {
 		return nil, err
 	}
 	select {
@@ -225,6 +298,9 @@ func (c *Client) onServer(m any) {
 			c.h.Search(s)
 		}
 		return
+	}
+	if st, ok := m.(protocol.UserStatusResponse); ok {
+		c.deliver(waitKey{st.Username, protocol.CodeGetUserStatus, 0}, m)
 	}
 	c.peers.handleServer(m)
 	c.distrib.handleServer(m)
@@ -254,17 +330,21 @@ func (c *Client) onPeer(username string, m any) {
 	case protocol.UserInfoResponse:
 		key = waitKey{username, protocol.CodeUserInfoResponse, 0}
 	}
-	if key.code != 0 {
-		c.mu.Lock()
-		waiters := c.waiters[key]
-		delete(c.waiters, key)
-		c.mu.Unlock()
-		if len(waiters) > 0 {
-			for _, ch := range waiters {
-				ch <- m
-			}
-			return
-		}
+	if key.code != 0 && c.deliver(key, m) {
+		return
 	}
 	c.h.Peer(username, m)
+}
+
+// deliver hands m to the requests waiting for key, reporting whether
+// there were any.
+func (c *Client) deliver(key waitKey, m any) bool {
+	c.mu.Lock()
+	waiters := c.waiters[key]
+	delete(c.waiters, key)
+	c.mu.Unlock()
+	for _, ch := range waiters {
+		ch <- m
+	}
+	return len(waiters) > 0
 }
