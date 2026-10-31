@@ -1,7 +1,7 @@
 <script lang="ts">
-  // Queues files or a folder for download and says how it went.
-  import { api, errorText, type FileRequest } from './api';
-  import { href } from './router.svelte';
+  // Queues files or a folder for download; the outcome shows as a toast.
+  import type { FileRequest } from './api';
+  import { queueFiles } from './queue';
   import Icon from './Icon.svelte';
 
   let {
@@ -9,77 +9,60 @@
     files,
     folder = '',
     label = 'Download',
+    caption = '',
     compact = false,
-  }: { username: string; files: FileRequest[]; folder?: string; label?: string; compact?: boolean } = $props();
+    primary = true,
+  }: {
+    username: string;
+    files: FileRequest[];
+    folder?: string;
+    label?: string;
+    caption?: string;
+    compact?: boolean;
+    primary?: boolean;
+  } = $props();
 
   let busy = $state(false);
-  let done = $state(0);
-  let failure = $state('');
+  let done = $state(false);
 
   async function go() {
+    if (busy) return;
     busy = true;
-    failure = '';
-    try {
-      const queued = folder ? await api.downloadFolder(username, folder, files) : await api.download(username, files);
-      done = queued.length;
-    } catch (e) {
-      failure = errorText(e);
-    } finally {
-      busy = false;
-    }
+    done = (await queueFiles(username, files, folder)) > 0 || done;
+    busy = false;
   }
 </script>
 
 {#if compact}
-  <button
-    class="icon-btn small"
-    class:ok={done > 0}
-    class:fail={!!failure}
-    disabled={busy}
-    onclick={go}
-    title={failure || (done ? 'Queued' : label)}
-    aria-label={label}
-  >
-    <Icon name={done ? 'check' : 'download'} size={17} />
+  <button class="icon-btn small" class:ok={done} disabled={busy} onclick={go} title={done ? 'Queued' : label} aria-label={label}>
+    <span class="ic" class:spin={busy}><Icon name={busy ? 'retry' : done ? 'check' : 'download'} size={17} /></span>
   </button>
 {:else}
-  <div class="wrap">
-    <button class="primary" disabled={busy} onclick={go}>
-      <Icon name={done ? 'check' : 'download'} size={18} />
-      {busy ? 'Queuing…' : done ? 'Queued' : label}
-    </button>
-    {#if done}
-      <span class="result" role="status">
-        {done} file{done === 1 ? '' : 's'} queued · <a href={href(['downloads'])}>View downloads</a>
-      </span>
-    {:else if failure}
-      <span class="result error" role="alert">{failure}</span>
-    {/if}
-  </div>
+  <button class="main" class:primary disabled={busy} onclick={go}>
+    <span class="ic" class:spin={busy}><Icon name={busy ? 'retry' : done ? 'check' : 'download'} size={17} /></span>
+    <span class="ellipsis">{busy ? 'Queuing…' : done ? 'Queued' : label}</span>
+    {#if caption && !busy && !done}<span class="caption">{caption}</span>{/if}
+  </button>
 {/if}
 
 <style>
-  .wrap {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+  .main {
+    min-width: 0;
   }
-  .wrap button {
-    width: 100%;
-    min-height: 42px;
+  .ic {
+    display: grid;
+    place-items: center;
   }
-  .result {
-    font-size: 12.5px;
-    color: var(--good);
-    text-align: center;
+  .caption {
+    font-weight: 500;
+    opacity: 0.78;
+    font-variant-numeric: tabular-nums;
   }
-  .result.error {
-    color: var(--bad);
+  .caption::before {
+    content: '·';
+    margin-right: 6px;
   }
   .ok {
     color: var(--good);
-  }
-  .fail {
-    color: var(--bad);
   }
 </style>

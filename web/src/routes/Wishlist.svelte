@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, errorText, type SearchFilter, type WishlistEntry } from '../lib/api';
+  import { emptyFilter, toSearchFilter, type QualityFilter } from '../lib/albums';
+  import { toast } from '../lib/toast.svelte';
   import { subscribe } from '../lib/events';
   import { ago, plural } from '../lib/format';
   import { href } from '../lib/router.svelte';
@@ -12,8 +14,8 @@
   let error = $state('');
 
   let query = $state('');
-  let formats = $state('');
-  let minBitrate = $state(0);
+  let formats = $state<string[]>([]);
+  let quality = $state<QualityFilter>('any');
   let minFiles = $state(0);
   let freeOnly = $state(false);
   let auto = $state(true);
@@ -52,23 +54,25 @@
 
   async function add(e: SubmitEvent) {
     e.preventDefault();
-    const filter: SearchFilter = {
-      formats: formats.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
-      min_bitrate: minBitrate,
-      min_files: minFiles || 0,
-      free_slot_only: freeOnly,
-    };
+    const filter: SearchFilter = toSearchFilter({ ...emptyFilter(), formats, quality, minFiles: minFiles || 0, freeOnly });
     adding = true;
+    const q = query;
     await run(async () => {
-      await api.addWishlist(query, filter, auto);
+      await api.addWishlist(q, filter, auto);
       query = '';
+      toast({ kind: 'success', message: `“${q}” added; the first search runs shortly` });
     });
     adding = false;
   }
 
+  const formatChoices = ['flac', 'mp3', 'm4a', 'ogg', 'opus', 'wav'];
+  function toggleFormat(f: string) {
+    formats = formats.includes(f) ? formats.filter((x) => x !== f) : [...formats, f];
+  }
+
   function describe(f: SearchFilter): string[] {
     const out: string[] = [];
-    if (f.formats?.length) out.push(f.formats.join('/'));
+    if (f.formats?.length) out.push(f.formats.map((x) => x.toUpperCase()).join(' / '));
     if (f.min_bitrate) out.push(`≥ ${f.min_bitrate} kbps`);
     if (f.min_files) out.push(`≥ ${f.min_files} files`);
     if (f.free_slot_only) out.push('free slot');
@@ -95,15 +99,27 @@
         <button class="primary" disabled={adding || !query.trim()}><Icon name="plus" size={18} /> Add</button>
       </div>
       <div class="row filters">
-        <input class="formats" placeholder="Formats, e.g. flac" bind:value={formats} aria-label="Formats" />
-        <select bind:value={minBitrate} aria-label="Minimum bitrate">
-          <option value={0}>Any bitrate</option>
-          <option value={256}>≥ 256 kbps</option>
-          <option value={320}>≥ 320 kbps</option>
+        <div class="chips" role="group" aria-label="Formats">
+          {#each formatChoices as f (f)}
+            <button type="button" class="chip" class:on={formats.includes(f)} aria-pressed={formats.includes(f)} onclick={() => toggleFormat(f)}>{f.toUpperCase()}</button>
+          {/each}
+        </div>
+        <select bind:value={quality} aria-label="Quality">
+          <option value="any">Any quality</option>
+          <option value="lossless">Lossless</option>
+          <option value="320">320 kbps or better</option>
+          <option value="256">256 kbps or better</option>
+          <option value="192">192 kbps or better</option>
         </select>
-        <label class="check">Min files <input type="number" min="0" inputmode="numeric" class="narrow" bind:value={minFiles} /></label>
-        <label class="check"><input type="checkbox" bind:checked={freeOnly} /> Free slot</label>
-        <label class="check auto"><input type="checkbox" bind:checked={auto} /> Download the best match</label>
+        <button type="button" class="chip" class:on={freeOnly} aria-pressed={freeOnly} onclick={() => (freeOnly = !freeOnly)}>
+          <span class="dot" class:good={freeOnly}></span> Free slot
+        </button>
+        <label class="check">Min tracks <input type="number" min="0" inputmode="numeric" class="narrow" bind:value={minFiles} /></label>
+        <label class="toggle auto">
+          <input type="checkbox" bind:checked={auto} />
+          <span class="track"><span class="knob"></span></span>
+          <span class="label">Download the best match</span>
+        </label>
       </div>
     </form>
     {#if error}<p class="banner" role="alert">{error}</p>{/if}
@@ -117,7 +133,7 @@
                 {#if e.running}<span class="dot good pulse" title="Searching"></span>{/if}
                 {e.query}
               </span>
-              <span class="chips">
+              <span class="tags">
                 {#each describe(e.filter) as c (c)}<span class="badge">{c}</span>{/each}
                 {#if e.auto_download}<span class="badge accent">Auto-download</span>{/if}
               </span>
@@ -137,7 +153,7 @@
               <label class="toggle" title={e.enabled ? 'Searching on schedule' : 'Paused'}>
                 <input type="checkbox" checked={e.enabled} onchange={() => run(() => api.updateWishlist(e.id, { enabled: !e.enabled }))} />
                 <span class="track"><span class="knob"></span></span>
-                <span class="sr">Search on schedule</span>
+                <span class="sr-only">Search on schedule</span>
               </label>
               <button class="small" disabled={e.running} onclick={() => run(() => api.searchWishlist(e.id))}>Search now</button>
               <button class="icon-btn small" aria-label="Remove {e.query}" title="Remove" onclick={() => run(() => api.removeWishlist(e.id))}><Icon name="trash" size={17} /></button>
@@ -168,23 +184,6 @@
     display: flex;
     gap: 8px;
   }
-  .field {
-    position: relative;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    color: var(--faint);
-  }
-  .field :global(.icon) {
-    position: absolute;
-    left: 12px;
-    pointer-events: none;
-  }
-  .field input {
-    width: 100%;
-    padding-left: 38px;
-    color: var(--text);
-  }
   .filters {
     flex-wrap: wrap;
     align-items: center;
@@ -195,8 +194,15 @@
     padding: 4px 10px;
     font-size: 13px;
   }
-  .formats {
-    width: 150px;
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .auto {
+    margin-left: auto;
+    color: var(--text);
+    font-weight: 500;
   }
   .check {
     display: inline-flex;
@@ -204,10 +210,6 @@
     gap: 6px;
     font-size: 13px;
     color: var(--muted);
-  }
-  .check.auto {
-    color: var(--text);
-    font-weight: 500;
   }
   .narrow {
     width: 64px;
@@ -238,12 +240,12 @@
   li.off .query {
     color: var(--muted);
   }
-  .chips {
+  .tags {
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
   }
-  .chips:empty {
+  .tags:empty {
     display: none;
   }
   .got {
@@ -257,61 +259,14 @@
     align-items: center;
     gap: 8px;
   }
-  .toggle {
-    position: relative;
-    display: inline-flex;
-    cursor: pointer;
-  }
-  .toggle input {
-    position: absolute;
-    opacity: 0;
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    cursor: pointer;
-  }
-  .track {
-    width: 38px;
-    height: 22px;
-    border-radius: 999px;
-    background: var(--surface-3);
-    padding: 2px;
-    transition: background 0.15s;
-  }
-  .knob {
-    display: block;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #fff;
-    box-shadow: var(--shadow-sm);
-    transition: transform 0.15s;
-  }
-  .toggle input:checked + .track {
-    background: var(--accent);
-  }
-  .toggle input:checked + .track .knob {
-    transform: translateX(16px);
-  }
-  .toggle input:focus-visible + .track {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-  .sr {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-  }
   @media (max-width: 720px) {
     .filters input:not([type='checkbox']),
     .filters select {
       min-height: 40px;
       font-size: 16px;
     }
-    .formats {
-      flex: 1 1 100%;
+    .auto {
+      margin-left: 0;
     }
     .entries > li {
       flex-wrap: wrap;
