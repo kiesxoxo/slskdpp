@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Web UI
+
+- Search results are a sortable table showing, for each album, its quality
+  (format with bit depth and sample rate, or bitrate), track count, size, total
+  length, user and other sources, upload speed and slot or queue.
+- Albums open in place to show every source, the folder path and the
+  tracklist. Tick files to download only those, or expand all results at once.
+- A text filter with `-word` exclusions, quality tiers (hi-res, lossless,
+  320/256/192 kbps), and a switch to list every user's folder separately
+  instead of grouping albums. Users can be hidden from a result.
+- Search results and Browse mark files already queued or downloaded.
+- Keyboard shortcuts on the search page, and a list of recent searches when
+  no search is open.
+- Downloads can be filtered by state and show time left.
+- Toasts confirm queued downloads; a banner shows when the Soulseek server
+  connection is down; the sidebar shows live transfer speeds.
+- The Inter typeface is bundled, so the UI looks the same everywhere.
+
 ## [0.1.0] - 2026-10-31
 
 The first release. slskdpp is young: it is well covered by tests and has run
