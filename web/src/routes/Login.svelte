@@ -31,7 +31,7 @@
     </div>
     <label>
       <span>Username</span>
-      <input bind:value={username} autocomplete="username" autocapitalize="off" required />
+      <input bind:value={username} autocomplete="username" autocapitalize="off" spellcheck="false" required />
     </label>
     <label>
       <span>Password</span>
@@ -39,6 +39,7 @@
     </label>
     {#if error}<p class="banner" role="alert">{error}</p>{/if}
     <button class="primary" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
+    <p class="hint muted small">The username is <code>slskdpp</code> unless <code>web.username</code> says otherwise.</p>
   </form>
 </div>
 
@@ -87,5 +88,16 @@
   button {
     margin-top: 4px;
     min-height: 42px;
+  }
+  .hint {
+    text-align: center;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--surface-2);
+    color: var(--text);
   }
 </style>

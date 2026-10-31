@@ -31,6 +31,19 @@
     hook: '<path d="M13 4.5L7.5 13h4.5l-1 6.5 5.5-8.5H12z"/>',
     user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5c1.2-3.3 3.8-5 7-5s5.8 1.7 7 5"/>',
     signal: '<path d="M5 18.5V16M9.7 18.5v-5M14.3 18.5v-8M19 18.5V5.5"/>',
+    alert: '<path d="M12 4.5l8.5 15h-17z"/><path d="M12 10.5v4M12 17.2v.1"/>',
+    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.1"/>',
+    up: '<path d="M5.5 14.5L12 8l6.5 6.5"/>',
+    sortUp: '<path d="M12 18.5v-13M7 10l5-5 5 5"/>',
+    sortDown: '<path d="M12 5.5v13M7 14l5 5 5-5"/>',
+    folder: '<path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H9l2 2.2h7.5a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>',
+    disc: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    layers: '<path d="M12 4l8.5 4.5L12 13 3.5 8.5z"/><path d="M3.5 12.5L12 17l8.5-4.5"/>',
+    list: '<path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.8" cy="6.5" r="1" fill="currentColor"/><circle cx="4.8" cy="12" r="1" fill="currentColor"/><circle cx="4.8" cy="17.5" r="1" fill="currentColor"/>',
+    bolt: '<path d="M13 3.5L6 13.5h5.5L10.5 20.5 18 10h-5.5z"/>',
+    hide: '<path d="M4 12s2.8-5.5 8-5.5c1.5 0 2.8.5 3.9 1.1M20 12s-2.8 5.5-8 5.5c-1.5 0-2.8-.5-3.9-1.1"/><path d="M10 13.9a2.5 2.5 0 0 1 3.9-3.9M5 19L19 5"/>',
+    queue: '<path d="M4 6.5h16M4 12h16M4 17.5h9"/>',
   } as const;
   export type IconName = keyof typeof paths;
 </script>

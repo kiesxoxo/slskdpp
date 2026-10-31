@@ -3,7 +3,7 @@
   import { href } from '../lib/router.svelte';
   import { isUploading, uploadSlots, uploads } from '../lib/uploads.svelte';
   import { plural, size, speed } from '../lib/format';
-  import Icon from '../lib/Icon.svelte';
+  import Icon, { type IconName } from '../lib/Icon.svelte';
   import PageHead from '../lib/PageHead.svelte';
 
   let error = $state('');
@@ -33,6 +33,14 @@
     completed: 'Done',
     failed: 'Failed',
     cancelled: 'Cancelled',
+  };
+  const badgeIcon: Record<Upload['state'], IconName> = {
+    queued: 'clock',
+    initializing: 'upload',
+    transferring: 'upload',
+    completed: 'check',
+    failed: 'alert',
+    cancelled: 'close',
   };
   const badge: Record<Upload['state'], string> = {
     queued: '',
@@ -64,7 +72,7 @@
         <div class="bar thin"><span style:width="{u.size ? (u.bytes / u.size) * 100 : 0}%"></span></div>
       {/if}
     </div>
-    <span class="badge {badge[u.state]}">{stateLabel[u.state]}</span>
+    <span class="badge {badge[u.state]}"><Icon name={badgeIcon[u.state]} size={12} stroke={2.2} />{stateLabel[u.state]}</span>
     {#if u.state === 'queued' || isUploading(u)}
       <button class="icon-btn small" title="Cancel" aria-label="Cancel {u.name}" onclick={() => run(() => api.cancelUpload(u.id))}><Icon name="close" size={17} /></button>
     {:else}

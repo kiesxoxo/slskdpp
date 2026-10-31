@@ -154,20 +154,32 @@ files are never shared. Changes on disk are picked up as they happen.
 
 ## The web UI
 
-- **Search.** Results arrive live and are grouped into albums, with format,
-  bitrate (or bit depth and sample rate for lossless files), size and length.
-  You can filter, open an album to see each user's copy, download a folder or
-  a single file, browse the user, or put the search on the wishlist.
-- **Browse.** A user's whole share as a folder tree you can filter.
-- **Downloads.** Progress grouped by folder, place in the uploader's queue,
-  retry countdowns, and which source is being tried. Files can be cancelled,
-  retried or cleared.
+- **Search.** Results arrive live in a sortable table, grouped into albums
+  across users. Each row shows the quality at a glance (such as `FLAC 24/96`
+  or `MP3 320`, coloured by tier), track count, size, total length, the best
+  user and how many others have it, their upload speed and whether a slot is
+  free. Open a row to compare every user's copy, see the tracklist and tick
+  the files you want, or download the whole folder in one click. Filter by
+  text (`-word` leaves things out), format, quality, free slots, track count
+  and user; turn off album grouping to see every user's folder on its own; or
+  expand all results at once. Files you already have queued or downloaded are
+  marked.
+- **Browse.** A user's whole share as a folder tree you can filter, with the
+  same file list and selection as search.
+- **Downloads.** Progress grouped by folder with time left, place in the
+  uploader's queue, retry countdowns, and which source is being tried. Filter
+  by active, done or failed; cancel, retry or clear files.
 - **Uploads.** Who is downloading from you, the queue in order, and slots in
   use.
 - **Wishlist.** Saved searches that keep running; see [below](#wishlist).
 - **Shares.** Folders you share, their totals, and rescans.
 - **Settings.** API keys, hooks with a test button, and account
   status.
+
+Keyboard shortcuts on the search page: <kbd>/</kbd> focuses the search box,
+<kbd>↑</kbd> <kbd>↓</kbd> (or <kbd>j</kbd> <kbd>k</kbd>) move through results,
+<kbd>→</kbd> and <kbd>←</kbd> open and close one, and <kbd>d</kbd> downloads
+it.
 
 It works on phones too. The theme follows your system, or you can pick light or
 dark in the sidebar (under **More** on phones).

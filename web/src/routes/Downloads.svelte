@@ -1,9 +1,10 @@
 <script lang="ts">
   import { SvelteSet } from 'svelte/reactivity';
   import { api, errorText, type Download, type DownloadState } from '../lib/api';
-  import { downloads, isActive, stateLabel } from '../lib/downloads.svelte';
-  import { plural, size, speed } from '../lib/format';
-  import Icon from '../lib/Icon.svelte';
+  import { downloads, eta, isActive, stateLabel } from '../lib/downloads.svelte';
+  import { left, size, speed } from '../lib/format';
+  import { href } from '../lib/router.svelte';
+  import Icon, { type IconName } from '../lib/Icon.svelte';
   import PageHead from '../lib/PageHead.svelte';
 
   interface Group {
@@ -23,6 +24,10 @@
   let error = $state('');
   // Finished groups start collapsed; this remembers the user's choice.
   const toggled = new SvelteSet<string>();
+
+  type Show = 'all' | 'active' | 'done' | 'failed';
+  let show = $state<Show>('all');
+  const kindOf = (d: Download): Show => (isActive(d) ? 'active' : d.state === 'completed' ? 'done' : 'failed');
 
   let groups = $derived.by(() => {
     const map = new Map<string, Group>();
@@ -47,6 +52,13 @@
     // Groups with work left first, newest first within each kind.
     return [...map.values()].sort((a, b) => Number(b.active > 0) - Number(a.active > 0) || b.newest - a.newest);
   });
+
+  // The groups and files the status filter lets through.
+  let shown = $derived(
+    groups
+      .map((g) => ({ g, items: show === 'all' ? g.items : g.items.filter((d) => kindOf(d) === show) }))
+      .filter((x) => x.items.length > 0),
+  );
 
   let totals = $derived.by(() => {
     let active = 0, done = 0, failed = 0, rate = 0;
@@ -87,6 +99,28 @@
     return total > 0 ? Math.min(100, (bytes / total) * 100) : 0;
   }
 
+  function badgeIcon(d: Download): IconName {
+    if (d.searching) return 'search';
+    switch (d.state) {
+      case 'transferring':
+      case 'initializing':
+        return 'download';
+      case 'completed':
+        return 'check';
+      case 'failed':
+        return 'alert';
+      case 'cancelled':
+        return 'close';
+      case 'queued_remote':
+        return 'queue';
+    }
+    return 'clock';
+  }
+
+  function groupEta(g: Group): string {
+    return g.speed > 0 ? left(eta(g.total - g.bytes, g.speed)) : '';
+  }
+
   function badgeClass(d: Download): string {
     if (d.searching) return 'warn';
     switch (d.state) {
@@ -104,7 +138,7 @@
   function detail(d: Download): string {
     switch (d.state) {
       case 'transferring':
-        return `${size(d.bytes)} of ${size(d.size)} · ${speed(d.speed)}`;
+        return [`${size(d.bytes)} of ${size(d.size)}`, speed(d.speed), left(eta(d.size - d.bytes, d.speed))].filter(Boolean).join(' · ');
       case 'queued_remote':
         return d.queue_place ? `place ${d.queue_place} in ${d.username}'s queue` : `waiting in ${d.username}'s queue`;
       case 'queued':
@@ -139,19 +173,31 @@
     </PageHead>
     {#if error}<p class="banner" role="alert">{error}</p>{/if}
 
-    {#each groups as g (g.key)}
-      {@const isOpen = open(g)}
+    {#if downloads.size}
+      <div class="seg" role="group" aria-label="Show">
+        {#each [['all', 'All', downloads.size], ['active', 'Active', totals.active], ['done', 'Done', totals.done], ['failed', 'Failed', totals.failed]] as [k, label, n] (k)}
+          <button class:on={show === k} aria-pressed={show === k} onclick={() => (show = k as Show)}>{label} <span class="n">{n}</span></button>
+        {/each}
+      </div>
+    {/if}
+
+    {#each shown as { g, items } (g.key)}
+      {@const isOpen = open(g) || show !== 'all'}
       <section class="group card">
         <div class="group-head">
           <button class="icon-btn small caret" class:open={isOpen} aria-expanded={isOpen} aria-label="Show files in {g.folder}" onclick={() => toggle(g)}>
             <Icon name="chevron" size={16} stroke={2.2} />
           </button>
-          <button class="group-title" onclick={() => toggle(g)}>
-            <span class="name ellipsis" title={g.folder}>{g.folder}</span>
-            <span class="muted small ellipsis">
-              {g.users.join(', ')} · {g.done}/{g.items.length} files · {size(g.bytes)} of {size(g.total)}{g.speed > 0 ? ' · ' + speed(g.speed) : ''}
+          <div class="group-title">
+            <button class="name ellipsis" title={g.folder} onclick={() => toggle(g)}>{g.folder}</button>
+            <span class="muted small ellipsis meta-line">
+              {#each g.users as u, i (u)}{i ? ', ' : ''}<a href={href(['browse', u])}>{u}</a>{/each}
+              · {g.done}/{g.items.length} files · {size(g.bytes)} of {size(g.total)}{g.speed > 0 ? ' · ' + speed(g.speed) : ''}{groupEta(g)
+                ? ' · ' + groupEta(g)
+                : ''}{g.failed ? ` · ${g.failed} failed` : ''}
             </span>
-          </button>
+          </div>
+          <span class="pct num" class:done={!g.active && !g.failed}>{Math.floor(pct(g.bytes, g.total))}%</span>
           <div class="group-actions">
             {#if g.failed}
               <button class="small" onclick={() => each(g.items, (d) => d.state === 'failed' || d.state === 'cancelled', api.retryDownload)}>
@@ -167,24 +213,25 @@
             {/if}
           </div>
         </div>
-        <div class="bar group-bar" class:done={!g.active && !g.failed}>
+        <div class="bar group-bar" class:done={!g.active && !g.failed} class:failed={!g.active && g.failed > 0}>
           <span style:width="{pct(g.bytes, g.total)}%"></span>
         </div>
         {#if isOpen}
           <ul class="rows">
-            {#each g.items as d (d.id)}
+            {#each items as d (d.id)}
               <li>
                 <div class="file">
                   <span class="ellipsis fname" title={d.filename}>{d.name}</span>
                   <span class="meta">
-                    <span class="badge phone-only {badgeClass(d)}">{d.searching ? 'Finding source' : stateLabel[d.state]}</span>
+                    <span class="badge phone-only {badgeClass(d)}"><Icon name={badgeIcon(d)} size={12} stroke={2.2} />{d.searching ? 'Finding source' : stateLabel[d.state]}</span>
                     <span class="muted small ellipsis" class:error={d.state === 'failed'}>{detail(d)}</span>
                   </span>
                   {#if d.state === 'transferring' || (d.bytes > 0 && isActive(d))}
                     <div class="bar thin"><span style:width="{pct(d.bytes, d.size)}%"></span></div>
                   {/if}
                 </div>
-                <span class="badge wide-only {badgeClass(d)}">
+                <span class="badge wide-only {badgeClass(d)}" title={d.sources > 1 ? `Trying source ${d.sources}` : undefined}>
+                  <Icon name={badgeIcon(d)} size={12} stroke={2.2} />
                   {d.searching ? 'Finding source' : stateLabel[d.state]}{d.sources > 1 ? ` · #${d.sources}` : ''}
                 </span>
                 <span class="file-actions">
@@ -208,9 +255,15 @@
     {:else}
       <div class="card">
         <div class="empty">
-          <span class="empty-icon"><Icon name="download" size={26} /></span>
-          <strong>Nothing downloading</strong>
-          <p>Find an album in Search and press “Download folder”. Progress shows up here.</p>
+          {#if downloads.size}
+            <span class="empty-icon"><Icon name="filter" size={26} /></span>
+            <strong>No {show} downloads</strong>
+            <button class="small" onclick={() => (show = 'all')}>Show all</button>
+          {:else}
+            <span class="empty-icon"><Icon name="download" size={26} /></span>
+            <strong>Nothing downloading</strong>
+            <p>Find an album in <a href={href(['search'])}>Search</a> and download a folder. Progress shows up here.</p>
+          {/if}
         </div>
       </div>
     {/each}
@@ -242,23 +295,41 @@
     align-items: flex-start;
     flex: 1;
     min-width: 0;
+  }
+  .group-title .name {
+    display: block;
+    max-width: 100%;
     min-height: 0;
     padding: 0;
     border: 0;
     background: transparent;
     text-align: left;
-    font-weight: 400;
-  }
-  .group-title:hover:not(:disabled) {
-    background: transparent;
-  }
-  .group-title .name {
-    max-width: 100%;
     font-weight: 600;
     font-size: 15px;
   }
-  .group-title .small {
+  .group-title .name:hover:not(:disabled) {
+    background: transparent;
+  }
+  .meta-line {
+    display: block;
     max-width: 100%;
+  }
+  .meta-line a {
+    color: inherit;
+    font-weight: 500;
+  }
+  .pct {
+    flex: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-right: 4px;
+  }
+  .pct.done {
+    color: var(--good);
+  }
+  .seg {
+    align-self: flex-start;
   }
   .group-actions {
     display: flex;

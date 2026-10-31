@@ -4,8 +4,11 @@
   import { api, errorText, type BrowseResult, type Dir } from '../lib/api';
   import { duration, plural, size } from '../lib/format';
   import { navigate } from '../lib/router.svelte';
+  import { summarize } from '../lib/quality';
   import VirtualList from '../lib/VirtualList.svelte';
   import DownloadButton from '../lib/DownloadButton.svelte';
+  import FileRow from '../lib/FileRow.svelte';
+  import QualityBadge from '../lib/QualityBadge.svelte';
   import Icon from '../lib/Icon.svelte';
 
   let { user, folder }: { user: string; folder: string } = $props();
@@ -91,6 +94,23 @@
 
   let selected = $derived(selectedPath ? tree.byPath.get(selectedPath) : undefined);
   let selectedBytes = $derived(selected?.dir?.files.reduce((n, f) => n + f.size, 0) ?? 0);
+  let files = $derived(
+    selected?.dir ? [...selected.dir.files].sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })) : [],
+  );
+  let sum = $derived(selected?.dir ? summarize(selected.dir.files) : null);
+  let crumbs = $derived(selected ? split(selected.path) : []);
+
+  // Files picked for download in the open folder.
+  const picked = new SvelteSet<string>();
+  $effect(() => {
+    selectedPath; // a new folder starts with nothing picked
+    picked.clear();
+  });
+  function pick(path: string) {
+    if (!picked.delete(path)) picked.add(path);
+  }
+  let pickedFiles = $derived(files.filter((f) => picked.has(f.path)));
+  let pickedBytes = $derived(pickedFiles.reduce((n, f) => n + f.size, 0));
 
   function revealInitial() {
     // Open single-child chains from the roots (the usual "@@share\Music").
@@ -140,9 +160,11 @@
     if (n.dir) selectedPath = n.path;
   }
 
-  function fileQuality(f: Dir['files'][number]): string {
-    if (f.bit_depth && f.sample_rate) return `${f.bit_depth}/${f.sample_rate / 1000}k`;
-    return f.bitrate ? `${f.bitrate}k` : '';
+  // reveal opens a folder in the tree, and shows its files if it has any.
+  function reveal(path: string) {
+    const parts = split(path);
+    for (let i = 1; i <= parts.length; i++) expanded.add(parts.slice(0, i).join('\\'));
+    selectedPath = tree.byPath.get(path)?.dir ? path : null;
   }
 
   function keydown(e: KeyboardEvent) {
@@ -223,45 +245,67 @@
       <div class="files-head">
         <button class="icon-btn back" aria-label="Back to folders" onclick={() => (selectedPath = null)}><Icon name="back" /></button>
         <div class="title">
+          <nav class="crumbs small" aria-label="Folder path">
+            {#each crumbs.slice(0, -1) as c, i (i)}
+              <button class="crumb" onclick={() => reveal(crumbs.slice(0, i + 1).join('\\'))}>{c}</button>
+              <Icon name="chevron" size={12} stroke={2.2} />
+            {/each}
+          </nav>
           <h2 class="ellipsis" title={selected.path}>{selected.name}</h2>
-          <p class="muted small ellipsis">{plural(selected.dir.files.length, 'file')} · {size(selectedBytes)} · <span class="mono">{selected.path}</span></p>
+          <p class="muted small meta">
+            {#if sum?.format}<QualityBadge files={selected.dir.files} />{/if}
+            <span class="num">{plural(selected.dir.files.length, 'file')} · {size(selectedBytes)}{sum?.duration ? ' · ' + duration(sum.duration) : ''}</span>
+          </p>
         </div>
       </div>
       <div class="scroll">
-        <table class="files">
-          <thead>
-            <tr><th>File</th><th class="num">Size</th><th class="num opt">Quality</th><th class="num len">Length</th><th class="act"></th></tr>
-          </thead>
-          <tbody>
-            {#each selected.dir.files as f (f.path)}
-              <tr>
-                <td class="fcell" title={f.name}>
-                  <span class="ellipsis fname">{f.name}</span>
-                  {#if fileQuality(f) || f.duration}
-                    <span class="fsub">{[fileQuality(f), duration(f.duration)].filter(Boolean).join(' · ')}</span>
-                  {/if}
-                </td>
-                <td class="num">{size(f.size)}</td>
-                <td class="num opt">{fileQuality(f)}</td>
-                <td class="num len">{duration(f.duration)}</td>
-                <td class="act">
-                  <DownloadButton compact username={user} files={[{ path: f.path, size: f.size }]} label="Download {f.name}" />
-                </td>
-              </tr>
-            {:else}
-              <tr><td colspan="5" class="muted">No files directly in this folder.</td></tr>
-            {/each}
-          </tbody>
-        </table>
+        {#if files.length}
+          <div class="file-head thead">
+            <input
+              type="checkbox"
+              checked={picked.size > 0 && picked.size === files.length}
+              {@attach (el: HTMLInputElement) => {
+                el.indeterminate = picked.size > 0 && picked.size < files.length;
+              }}
+              onchange={() => {
+                const all = picked.size < files.length;
+                picked.clear();
+                if (all) for (const f of files) picked.add(f.path);
+              }}
+              aria-label="Select all files"
+            />
+            <span>File</span>
+            <span class="r">Quality</span>
+            <span class="r">Length</span>
+            <span class="r">Size</span>
+            <span></span>
+          </div>
+          {#each files as f (f.path)}
+            <FileRow file={f} username={user} indent={16} checked={picked.has(f.path)} ontoggle={() => pick(f.path)} />
+          {/each}
+        {:else}
+          <p class="muted none">No files directly in this folder.</p>
+        {/if}
       </div>
-      {#key selected.path}
+      {#key selected.path + ':' + picked.size}
         <div class="files-foot">
-          <DownloadButton
-            username={user}
-            folder={selected.dir.name}
-            files={selected.dir.files.map((f) => ({ path: f.path, size: f.size }))}
-            label="Download folder"
-          />
+          {#if picked.size}
+            <DownloadButton
+              username={user}
+              files={pickedFiles.map((f) => ({ path: f.path, size: f.size }))}
+              label="Download {plural(picked.size, 'file')}"
+              caption={size(pickedBytes)}
+            />
+            <button class="ghost small" onclick={() => picked.clear()}>Clear selection</button>
+          {:else}
+            <DownloadButton
+              username={user}
+              folder={selected.dir.name}
+              files={selected.dir.files.map((f) => ({ path: f.path, size: f.size }))}
+              label="Download folder"
+              caption="{plural(selected.dir.files.length, 'file')} · {size(selectedBytes)}"
+            />
+          {/if}
         </div>
       {/key}
     {:else if data}
@@ -380,15 +424,48 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 16px 20px 12px;
+    padding: 16px 20px 14px;
     border-bottom: 1px solid var(--border);
   }
   .title {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
     flex: 1;
     min-width: 0;
   }
   .title h2 {
-    font-size: 17px;
+    font-size: 18px;
+    letter-spacing: -0.01em;
+  }
+  .crumbs {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px;
+    color: var(--faint);
+  }
+  .crumbs:empty {
+    display: none;
+  }
+  .crumb {
+    min-height: 0;
+    padding: 0 3px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+  .crumb:hover:not(:disabled) {
+    background: transparent;
+    color: var(--accent);
+  }
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
   }
   .back {
     display: none;
@@ -397,28 +474,37 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 4px 12px;
+    padding: 0 0 8px;
   }
-  .fcell {
-    overflow: hidden;
+  .file-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) 72px 56px 72px 36px;
+    align-items: center;
+    gap: 0 8px;
+    height: 36px;
+    padding: 0 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
   }
-  .fname {
-    display: block;
-  }
-  .fsub {
-    display: none;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  th.act {
-    width: 46px;
-  }
-  td.act {
+  .file-head .r {
     text-align: right;
   }
+  .none {
+    padding: 20px;
+  }
   .files-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 12px 20px;
     border-top: 1px solid var(--border);
+  }
+  .files-foot :global(.main) {
+    flex: 1;
+    max-width: 420px;
   }
 
   @media (max-width: 860px) {
@@ -447,6 +533,9 @@
     .files-foot {
       padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
     }
+    .files-foot :global(.main) {
+      max-width: none;
+    }
   }
 
   @media (max-width: 720px) {
@@ -456,12 +545,8 @@
     .node {
       font-size: 15px;
     }
-    th.len,
-    td.len {
+    .file-head {
       display: none;
-    }
-    .fsub {
-      display: block;
     }
   }
 </style>

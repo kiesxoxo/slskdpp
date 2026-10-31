@@ -4,6 +4,7 @@ export const session = $state({
   checked: false,
   user: null as string | null,
   connected: false,
+  stateKnown: false, // a server.state event has arrived
   soulseekUser: '',
   version: '',
 });

@@ -41,3 +41,12 @@ export function ago(iso?: string): string {
 export function plural(n: number, word: string): string {
   return `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 }
+
+// left describes a number of seconds still to go, roughly.
+export function left(seconds: number): string {
+  if (seconds <= 0) return '';
+  if (seconds < 60) return `${seconds} s left`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min left`;
+  const h = Math.floor(seconds / 3600);
+  return `${h} h ${Math.round((seconds % 3600) / 60)} min left`;
+}
