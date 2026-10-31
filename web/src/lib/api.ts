@@ -54,6 +54,7 @@ export interface BrowseResult {
 export interface ServerState {
   connected: boolean;
   username: string;
+  version: string;
 }
 
 export type DownloadState =

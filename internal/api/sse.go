@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kiesxoxo/slskdpp/internal/version"
 	"io"
 	"net/http"
 	"strconv"
@@ -77,7 +78,7 @@ func writeEvent(w io.Writer, e events.Event) {
 }
 
 func (a *API) state() events.ServerState {
-	return events.ServerState{Connected: a.net.LoggedIn(), Username: a.net.Username()}
+	return events.ServerState{Connected: a.net.LoggedIn(), Username: a.net.Username(), Version: version.String()}
 }
 
 func (a *API) serverState(w http.ResponseWriter, r *http.Request) {

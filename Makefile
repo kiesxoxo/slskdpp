@@ -1,12 +1,14 @@
 .PHONY: build build-go ui ui-check test vet fmt clean
 
 BIN := bin/slskdpp
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X github.com/kiesxoxo/slskdpp/internal/version.Version=$(VERSION)
 
 # build compiles the UI and embeds it into the binary.
 build: ui build-go
 
 build-go:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) ./cmd/slskdpp
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) ./cmd/slskdpp
 
 ui: web/node_modules
 	cd web && npm run build

@@ -15,6 +15,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/app"
 	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/config"
+	"github.com/kiesxoxo/slskdpp/internal/version"
 )
 
 const usage = `usage: slskdpp [flags] [command]
@@ -32,11 +33,16 @@ Flags:
 func main() {
 	configPath := flag.String("config", "slskdpp.yaml", "path to config file")
 	checkLogin := flag.Bool("check-login", false, "log in once, print the result and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Usage = func() {
 		fmt.Fprint(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("slskdpp", version.String())
+		return
+	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -83,6 +89,7 @@ func main() {
 		return
 	}
 
+	log.Info("starting slskdpp", "version", version.String())
 	a, err := app.New(cfg, log)
 	if err != nil {
 		fatal(err)

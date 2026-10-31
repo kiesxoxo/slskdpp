@@ -42,6 +42,7 @@
         'server.state': (s: ServerState) => {
           session.connected = s.connected;
           session.soulseekUser = s.username;
+          session.version = s.version;
         },
         download: (d: Download) => updateDownload(d),
         'download.removed': (e: { id: number }) => removeDownload(e.id),

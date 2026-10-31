@@ -99,6 +99,8 @@
         </dd>
         <dt>Web login</dt>
         <dd>{session.user}</dd>
+        <dt>Version</dt>
+        <dd class="mono">{session.version || '…'}</dd>
       </dl>
     </section>
 

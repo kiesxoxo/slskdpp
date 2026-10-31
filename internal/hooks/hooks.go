@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -171,7 +172,7 @@ const maxOutput = 4 << 10
 func (r *Runner) run(ctx context.Context, cmd string, e Event) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.cfg.CommandTimeout)
 	defer cancel()
-	c := exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
+	c := shellCommand(ctx, cmd)
 	c.Env = append(os.Environ(),
 		"SLSKDPP_EVENT="+e.Event,
 		"SLSKDPP_PATH="+e.Path,
@@ -231,4 +232,12 @@ func (r *Runner) postOnce(ctx context.Context, body []byte) error {
 		return fmt.Errorf("webhook answered %s", resp.Status)
 	}
 	return nil
+}
+
+// shellCommand runs cmd through the platform's shell.
+func shellCommand(ctx context.Context, cmd string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.CommandContext(ctx, "cmd", "/C", cmd)
+	}
+	return exec.CommandContext(ctx, "/bin/sh", "-c", cmd)
 }

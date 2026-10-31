@@ -40,6 +40,7 @@ type Event struct {
 type ServerState struct {
 	Connected bool   `json:"connected"`
 	Username  string `json:"username"`
+	Version   string `json:"version"`
 }
 
 type SearchHit struct {

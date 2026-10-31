@@ -1,10 +1,13 @@
 # systemd unit for slskdpp.
 #
 #   sudo useradd --system --home /var/lib/slskdpp --shell /usr/sbin/nologin slskdpp
-#   sudo install -m 755 bin/slskdpp /usr/local/bin/slskdpp
+# From an unpacked release archive (from a source checkout, use bin/slskdpp
+# and packaging/slskdpp.service instead):
+#
+#   sudo install -m 755 slskdpp /usr/local/bin/slskdpp
 #   sudo install -d -m 750 -o root -g slskdpp /etc/slskdpp
 #   sudo install -m 640 -g slskdpp slskdpp.example.yaml /etc/slskdpp/slskdpp.yaml   # then edit it
-#   sudo install -m 644 packaging/slskdpp.service /etc/systemd/system/
+#   sudo install -m 644 slskdpp.service /etc/systemd/system/
 #   sudo systemctl enable --now slskdpp
 #
 # State, downloads and partial files go to /var/lib/slskdpp. The unit

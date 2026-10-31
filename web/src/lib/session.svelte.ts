@@ -5,4 +5,5 @@ export const session = $state({
   user: null as string | null,
   connected: false,
   soulseekUser: '',
+  version: '',
 });

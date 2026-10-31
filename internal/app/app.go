@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/kiesxoxo/slskdpp/internal/version"
 	"log/slog"
 	"net"
 	"net/http"
@@ -87,7 +88,7 @@ func (a *App) build() error {
 			if loggedIn {
 				a.downloads.LoggedIn()
 			}
-			a.publish(events.TypeServerState, 0, events.ServerState{Connected: loggedIn, Username: cfg.Soulseek.Username})
+			a.publish(events.TypeServerState, 0, events.ServerState{Connected: loggedIn, Username: cfg.Soulseek.Username, Version: version.String()})
 		},
 	})
 	c := a.client

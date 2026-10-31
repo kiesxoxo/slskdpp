@@ -4,21 +4,27 @@
 # run; build with --build-arg RUNTIME=alpine:3.20 to use them.
 ARG RUNTIME=gcr.io/distroless/static-debian12:nonroot
 
-FROM node:22-alpine AS web
+# The UI and binary are built on the build machine's platform and the
+# binary cross-compiled, so multi-platform images need no emulation.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.26.10-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS build
+ARG TARGETOS TARGETARCH TARGETVARIANT
+ARG VERSION=dev
 ENV GOTOOLCHAIN=auto
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/slskdpp ./cmd/slskdpp
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
+    go build -trimpath -ldflags="-s -w -X github.com/kiesxoxo/slskdpp/internal/version.Version=$VERSION" \
+    -o /out/slskdpp ./cmd/slskdpp
 
 FROM ${RUNTIME}
 COPY --from=build /out/slskdpp /usr/local/bin/slskdpp

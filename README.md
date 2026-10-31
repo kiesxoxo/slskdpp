@@ -56,9 +56,9 @@ creates the account on first login).
 
 ### Docker
 
-```bash
-docker build -t slskdpp .
-```
+Images for amd64, arm64 and armv7 are published on GitHub's registry as
+`ghcr.io/kiesxoxo/slskdpp`, tagged `latest`, by version (`0.1.0`) and by minor
+version (`0.1`).
 
 ```bash
 docker run -d --name slskdpp \
@@ -67,7 +67,7 @@ docker run -d --name slskdpp \
   -v /srv/music:/music:ro \
   -e SLSKDPP_USERNAME=me -e SLSKDPP_PASSWORD=secret \
   -e SLSKDPP_WEB_PASSWORD=changeme \
-  slskdpp
+  ghcr.io/kiesxoxo/slskdpp:latest
 ```
 
 Open <http://localhost:5030>, log in as `slskdpp` with your web password and add
@@ -76,15 +76,15 @@ must be writable by it (`sudo chown 65532:65532 /srv/slskdpp`). Downloads land
 in `/srv/slskdpp/downloads`.
 
 For a config file, mount it at `/config/slskdpp.yaml`. The default image has no
-shell, so [hook commands](#hooks) cannot run in it; webhooks still work. Build
-with `--build-arg RUNTIME=alpine:3.20` if you need commands.
+shell, so [hook commands](#hooks) cannot run in it; webhooks still work. Use
+the `-alpine` tags (such as `latest-alpine`) if you need commands.
 
 With Compose:
 
 ```yaml
 services:
   slskdpp:
-    build: .
+    image: ghcr.io/kiesxoxo/slskdpp:latest
     restart: unless-stopped
     ports: ["5030:5030", "2234:2234"]
     volumes:
@@ -98,22 +98,24 @@ services:
 
 ### Binary
 
-```bash
-make build
-```
+Download the archive for your system from the
+[releases page](https://github.com/kiesxoxo/slskdpp/releases) and unpack it. It
+holds the binary, this README, an example config and, for Linux, a systemd
+unit. Only the Linux builds have been tested so far. You can also
+[build it yourself](#building-from-source).
 
 ```bash
 cp slskdpp.example.yaml slskdpp.yaml   # set soulseek.username and password
 ```
 
 ```bash
-./bin/slskdpp -config slskdpp.yaml
+./slskdpp -config slskdpp.yaml
 ```
 
 To check your account before anything else:
 
 ```bash
-./bin/slskdpp -config slskdpp.yaml -check-login
+./slskdpp -config slskdpp.yaml -check-login
 ```
 
 ### systemd
@@ -327,6 +329,14 @@ Vite proxies `/api` to it.
 
 `make build-go` builds without rebuilding the UI. Without a built UI the binary
 serves a short "UI not built" page, and the API still works.
+
+`slskdpp -version` prints the version the binary was built from.
+
+To release, add a section for the version to [CHANGELOG.md](CHANGELOG.md) and
+push a tag such as `v0.2.0`. The release workflow runs CI, then publishes the
+binaries, checksums and changelog section as a GitHub release, and the images
+on ghcr.io. A tag with a hyphen (`v0.2.0-rc.1`) makes a pre-release and leaves
+`latest` alone.
 
 The code is organized as follows:
 
