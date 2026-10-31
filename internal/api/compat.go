@@ -41,6 +41,16 @@ func (a *API) routesV0(mux *http.ServeMux) {
 	h("POST /api/v0/application/loopback", a.v0Loopback)
 	a.routesFiles(h)
 	h("GET /api/v0/options", a.v0Options)
+	h("PATCH /api/v0/options", a.v0PatchOptions)
+	h("GET /api/v0/options/startup", a.v0StartupOptions)
+	h("GET /api/v0/options/debug", a.v0DebugOptions)
+	h("GET /api/v0/options/yaml/location", a.v0YAMLLocation)
+	h("GET /api/v0/options/yaml", a.v0GetYAML)
+	h("PUT /api/v0/options/yaml", a.v0PutYAML)
+	h("POST /api/v0/options/yaml/validate", a.v0ValidateYAML)
+	h("GET /api/v0/logs/live", a.v0LiveLogs)
+	h("GET /api/v0/logs/files", a.v0LogFiles)
+	h("GET /api/v0/logs/files/{filename}", a.v0LogFile)
 	h("GET /api/v0/events", a.v0ListEvents)
 	h("POST /api/v0/events/{type}", a.v0RaiseEvent)
 
@@ -91,15 +101,6 @@ func v0JSON(w http.ResponseWriter, r *http.Request, status int, v any) { writeJS
 
 func (a *API) v0Version(w http.ResponseWriter, r *http.Request) {
 	v0JSON(w, r, http.StatusOK, compatVersion)
-}
-
-func (a *API) v0Options(w http.ResponseWriter, r *http.Request) {
-	v0JSON(w, r, http.StatusOK, map[string]any{
-		"directories": map[string]string{"downloads": a.cfg.DownloadDir, "incomplete": a.cfg.IncompleteDir},
-		// Files queued without a destination go into a folder named after
-		// their remote parent folder, as with slskd's default.
-		"transfers": map[string]any{"download": map[string]any{"destination": map[string]any{"subdirectory": "${SOURCE_DIRECTORY}"}}},
-	})
 }
 
 // newUUID returns a random version 4 UUID.

@@ -226,6 +226,7 @@ func (a *App) build() error {
 	}, api.Deps{
 		Net: c, Searches: a.searches, Downloads: a.downloads, Uploads: a.uploads, Shares: a.shares,
 		Hooks: a.hooks, Wishlist: a.wishlist, Bus: a.bus, DB: a.db, Stop: a.Stop,
+		Settings: cfg, Logs: logSource(log),
 	})
 	return err
 }
@@ -257,6 +258,14 @@ func (a *App) onPeer(user string, m any) {
 
 // Handler serves the web UI and API.
 func (a *App) Handler() http.Handler { return a.handler }
+
+// logSource is log's handler if it keeps records for the API.
+func logSource(log *slog.Logger) api.LogSource {
+	if src, ok := log.Handler().(api.LogSource); ok {
+		return src
+	}
+	return nil
+}
 
 // WaitLoggedIn blocks until the Soulseek session is up or ctx is done.
 func (a *App) WaitLoggedIn(ctx context.Context) error { return a.client.Server().WaitLoggedIn(ctx) }

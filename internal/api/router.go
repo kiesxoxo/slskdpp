@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"github.com/kiesxoxo/slskdpp/internal/client"
+	"github.com/kiesxoxo/slskdpp/internal/config"
 	"github.com/kiesxoxo/slskdpp/internal/events"
 	"github.com/kiesxoxo/slskdpp/internal/hooks"
+	"github.com/kiesxoxo/slskdpp/internal/logs"
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
 	"github.com/kiesxoxo/slskdpp/internal/search"
 	"github.com/kiesxoxo/slskdpp/internal/shares"
@@ -35,6 +37,8 @@ type Network interface {
 	FolderContents(ctx context.Context, username, folder string) (protocol.FolderContentsResponse, error)
 	UserInfo(ctx context.Context, username string) (protocol.UserInfoResponse, error)
 	DistribParent() string
+	SetListen(ip string, port uint32) error
+	ListenAddr() (string, uint32)
 	UserStatus(ctx context.Context, username string) (protocol.UserStatusResponse, error)
 	PeerAddress(ctx context.Context, username string) (protocol.PeerAddress, error)
 	BrowseStatus(username string) (client.BrowseProgress, bool)
@@ -81,6 +85,17 @@ type Deps struct {
 	// Stop shuts the daemon down, or restarts it. Without it the API
 	// cannot.
 	Stop func(restart bool)
+	// Settings is the configuration the daemon started with, shown to
+	// slskd clients as their options.
+	Settings config.Config
+	// Logs serves recent log records and log files, if set.
+	Logs LogSource
+}
+
+// LogSource is where the daemon's log goes; logs.Handler is one.
+type LogSource interface {
+	Recent() []logs.Record
+	Dir() string
 }
 
 type API struct {
@@ -95,9 +110,12 @@ type API struct {
 	wishlist  *wishlist.Manager
 	bus       *events.Bus
 	stop      func(restart bool)
+	settings  config.Config
+	logs      LogSource
 	keys      *keyring
 	v0        v0Searches
 	v0Events  *v0Events
+	v0Opts    v0OptionsState
 	// v0DisconnectMsg is the reason given to the latest DELETE
 	// /api/v0/server, for the SoulseekClientDisconnected event.
 	v0DisconnectMsg atomic.Pointer[string]
@@ -123,6 +141,8 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 		wishlist:  d.Wishlist,
 		bus:       d.Bus,
 		stop:      d.Stop,
+		settings:  d.Settings,
+		logs:      d.Logs,
 		limiter:   newLoginLimiter(),
 		now:       time.Now,
 		v0:        v0Searches{byID: map[string]*v0Search{}},

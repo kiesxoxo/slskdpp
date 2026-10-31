@@ -274,13 +274,23 @@ folders, browse progress, details, online status and address; downloads,
 batches and a download's place in the remote queue; uploads; the event log;
 your own shares (listing, contents, rescanning); connecting to and
 disconnecting from the server; listing (and, if allowed, deleting) what is in
-the downloads and incomplete folders; and the application state, version,
-options, restart and shutdown. These live under `/api/v0` with slskd's field
-names and states.
+the downloads and incomplete folders; the application state, version, restart
+and shutdown; the options (your config shown in slskd's terms, secrets
+redacted), reading and rewriting the config file, and moving the listen port;
+and recent log records and log files. These live under `/api/v0` with slskd's
+field names and states.
 
 As in slskd, deleting files through `/api/v0/files` is off unless
 `web.remote_file_management` is `true`, and restarting or shutting down
-(`PUT`/`DELETE /api/v0/application`) needs a login, not an API key.
+(`PUT`/`DELETE /api/v0/application`) needs a login, not an API key. Changing
+the configuration through `/api/v0/options` is off unless
+`web.remote_configuration` is `true`; a rewritten config file applies on the
+next restart, while a new listen port (`PATCH /api/v0/options`) applies at
+once.
+
+slskdpp also writes its log to daily files in `<data>/logs`, kept for
+`log_keep_days` days (7 by default); set `log_files: false` to log to the
+console only.
 
 For soularr, set the `[Slskd]` section as you would for slskd:
 
@@ -313,8 +323,7 @@ Tools can authenticate with an API key (`X-API-Key`, or `Authorization: Bearer`
 with the key), or log in like slskd: `POST /api/v0/session` with the web
 username and password returns a token that lasts 7 days, sent back as
 `Authorization: Bearer <token>`. A token has the same rights as logging in to
-the web UI. Chat, rooms, logs, telemetry and editing options through the API
-are not implemented.
+the web UI. Chat, rooms and telemetry are not implemented.
 
 ## Networking
 

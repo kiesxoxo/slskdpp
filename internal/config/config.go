@@ -3,8 +3,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,7 +24,17 @@ type Config struct {
 	Wishlist    Wishlist    `yaml:"wishlist"`
 	Shares      []string    `yaml:"shares"`
 	LogLevel    string      `yaml:"log_level"`
+	// LogFiles writes the log to daily files in <data>/logs too, kept for
+	// LogKeepDays days.
+	LogFiles    bool `yaml:"log_files"`
+	LogKeepDays int  `yaml:"log_keep_days"`
+
+	// Path is the config file, whether or not it existed when loaded.
+	Path string `yaml:"-"`
 }
+
+// LogDir is where log files go.
+func (c Config) LogDir() string { return filepath.Join(c.Directories.Data, "logs") }
 
 type Soulseek struct {
 	Username   string `yaml:"username"`
@@ -83,6 +95,10 @@ type Web struct {
 	// folders in the downloads and incomplete directories. Off by
 	// default, as in slskd.
 	RemoteFileManagement bool `yaml:"remote_file_management"`
+	// RemoteConfiguration lets the slskd-compatible API read and rewrite
+	// the config file and change the listen port. Off by default, as in
+	// slskd.
+	RemoteConfiguration bool `yaml:"remote_configuration"`
 }
 
 func Default() Config {
@@ -95,13 +111,29 @@ func Default() Config {
 		Transfers:   Transfers{MaxAttempts: 5, MaxSources: 3, UploadSlots: 2, MaxQueuedPerUser: 500},
 		Web:         Web{Listen: ":5030", Username: "slskdpp"},
 		LogLevel:    "info",
+		LogFiles:    true,
+		LogKeepDays: 7,
 	}
+}
+
+// Parse reads a config file's contents, refusing unknown keys, without
+// environment overrides or derived defaults. It is for checking a file
+// before writing it.
+func Parse(b []byte) (Config, error) {
+	cfg := Default()
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 // Load reads path (if it exists), applies environment overrides and
 // fills derived defaults. A missing file is not an error.
 func Load(path string) (Config, error) {
 	cfg := Default()
+	cfg.Path = path
 	if path != "" {
 		b, err := os.ReadFile(path)
 		switch {
@@ -114,7 +146,7 @@ func Load(path string) (Config, error) {
 			}
 		}
 	}
-	if err := applyEnv(&cfg); err != nil {
+	if err := cfg.ApplyEnv(); err != nil {
 		return cfg, err
 	}
 	if cfg.Directories.Downloads == "" {
@@ -126,7 +158,8 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-func applyEnv(cfg *Config) error {
+// ApplyEnv applies SLSKDPP_* environment overrides.
+func (cfg *Config) ApplyEnv() error {
 	strs := map[string]*string{
 		"SLSKDPP_USERNAME":       &cfg.Soulseek.Username,
 		"SLSKDPP_PASSWORD":       &cfg.Soulseek.Password,
@@ -171,6 +204,9 @@ func (c Config) Validate() error {
 	}
 	if c.Soulseek.ListenPort == 0 || c.Soulseek.ListenPort > 65535 {
 		errs = append(errs, errors.New("soulseek.listen_port must be 1-65535"))
+	}
+	if c.LogKeepDays < 0 {
+		errs = append(errs, errors.New("log_keep_days must not be negative"))
 	}
 	return errors.Join(errs...)
 }

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -67,11 +68,14 @@ type Peers struct {
 	inbound    *inboundLimiter
 	bigDecodes chan struct{}
 
-	mu      sync.Mutex
-	conns   map[string]*PeerConn // newest message connection per user
-	dials   map[string]*dialCall
-	addrs   map[string][]chan protocol.PeerAddress
-	pierces map[uint32]chan pierceResult
+	mu        sync.Mutex
+	listenCtx context.Context      // set by Listen
+	listenIP  string               // "" for every address
+	ln        net.Listener         // the current listener
+	conns     map[string]*PeerConn // newest message connection per user
+	dials     map[string]*dialCall
+	addrs     map[string][]chan protocol.PeerAddress
+	pierces   map[uint32]chan pierceResult
 }
 
 type dialCall struct {
@@ -106,10 +110,52 @@ func newPeers(username string, listenPort uint32, log *slog.Logger, server serve
 // Listen binds the listen port and accepts peer connections until ctx is
 // done.
 func (p *Peers) Listen(ctx context.Context) error {
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", fmt.Sprintf(":%d", p.listenPort))
+	p.mu.Lock()
+	ip, port := p.listenIP, p.listenPort
+	p.mu.Unlock()
+	ln, err := p.listen(ctx, ip, port)
 	if err != nil {
-		return fmt.Errorf("listen for peers: %w", err)
+		return err
+	}
+	p.mu.Lock()
+	p.listenCtx, p.ln = ctx, ln
+	p.mu.Unlock()
+	return nil
+}
+
+// Relisten moves the listener to another address and port. The old one
+// is closed only once the new one is open; on error nothing changes.
+func (p *Peers) Relisten(ip string, port uint32) error {
+	p.mu.Lock()
+	ctx, old := p.listenCtx, p.ln
+	p.mu.Unlock()
+	if ctx == nil {
+		return errors.New("not listening yet")
+	}
+	ln, err := p.listen(ctx, ip, port)
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.ln, p.listenIP, p.listenPort = ln, ip, port
+	p.mu.Unlock()
+	old.Close()
+	return nil
+}
+
+// ListenAddr is the address ("" for all) and port we listen on.
+func (p *Peers) ListenAddr() (string, uint32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.listenIP, p.listenPort
+}
+
+// listen opens a listener and accepts peers on it until it is closed.
+func (p *Peers) listen(ctx context.Context, ip string, port uint32) (net.Listener, error) {
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", net.JoinHostPort(ip, strconv.Itoa(int(port))))
+	if err != nil {
+		return nil, fmt.Errorf("listen for peers: %w", err)
 	}
 	p.log.Info("listening for peers", "addr", ln.Addr())
 	context.AfterFunc(ctx, func() { ln.Close() })
@@ -117,7 +163,10 @@ func (p *Peers) Listen(ctx context.Context) error {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
-				if ctx.Err() == nil {
+				p.mu.Lock()
+				replaced := p.ln != nil && p.ln != ln
+				p.mu.Unlock()
+				if ctx.Err() == nil && !replaced {
 					p.log.Error("peer listener stopped", "err", err)
 				}
 				return
@@ -131,7 +180,7 @@ func (p *Peers) Listen(ctx context.Context) error {
 			go p.accept(lc)
 		}
 	}()
-	return nil
+	return ln, nil
 }
 
 // handleServer consumes the server messages that belong to the peer layer.

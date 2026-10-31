@@ -18,6 +18,7 @@ web:
   api_keys: []        # for scripts (X-API-Key header); also SLSKDPP_API_KEY; more can be made in Settings
   trusted_proxies: [] # reverse proxies whose X-Forwarded-For is believed (IPs or CIDRs); loopback when empty
   remote_file_management: false # let the slskd-compatible API delete downloaded and incomplete files
+  remote_configuration: false   # let the slskd-compatible API read and rewrite this file and change the listen port
 
 transfers:
   max_attempts: 5               # tries per source before looking for another
@@ -44,3 +45,5 @@ hooks:
 # "Alias=/path". More can be added from the web UI.
 shares: []
 log_level: info
+log_files: true     # also write the log to daily files in <data>/logs
+log_keep_days: 7    # days of log files to keep

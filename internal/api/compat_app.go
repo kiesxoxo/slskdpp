@@ -43,10 +43,13 @@ func (a *API) v0Application(w http.ResponseWriter, r *http.Request) {
 	if parent != "" {
 		dist["parent"] = parent
 	}
+	a.v0Opts.mu.Lock()
+	pendingRestart := a.v0Opts.pendingRestart
+	a.v0Opts.mu.Unlock()
 	v0JSON(w, r, http.StatusOK, map[string]any{
 		"version":          v0VersionState(),
 		"pendingReconnect": false,
-		"pendingRestart":   false,
+		"pendingRestart":   pendingRestart,
 		"server":           a.v0Server(),
 		"connectionWatchdog": map[string]any{
 			"isEnabled":              !st.LoggedIn && !st.Paused,

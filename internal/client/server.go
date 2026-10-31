@@ -252,6 +252,15 @@ func (s *Server) Send(m protocol.ServerRequest) error {
 }
 
 // session runs one connection from dial to disconnect.
+// SetListenPort changes the port announced to the server, now if logged
+// in and on every later login.
+func (s *Server) SetListenPort(port uint32) {
+	s.mu.Lock()
+	s.cfg.ListenPort = port
+	s.mu.Unlock()
+	s.Send(protocol.SetWaitPort{Port: port})
+}
+
 func (s *Server) session(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -281,9 +290,12 @@ func (s *Server) session(ctx context.Context) error {
 	defer stop()
 
 	sendCh := make(chan []byte, sendQueueSize)
+	s.mu.Lock()
+	port := s.cfg.ListenPort
+	s.mu.Unlock()
 	// Announce ourselves before anything else can be queued.
 	for _, m := range []protocol.ServerRequest{
-		protocol.SetWaitPort{Port: s.cfg.ListenPort},
+		protocol.SetWaitPort{Port: port},
 		protocol.SharedFoldersFiles{},
 		protocol.SetStatus{Status: protocol.StatusOnline},
 	} {

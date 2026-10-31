@@ -36,8 +36,10 @@ type fakeNet struct {
 	loggedIn bool
 	token    uint32
 
-	mu     sync.Mutex
-	paused bool // disconnected through the API
+	mu         sync.Mutex
+	paused     bool // disconnected through the API
+	listenIP   string
+	listenPort uint32
 }
 
 // UserStatus: "ghost" is offline, "vip" privileged, everyone else online.
@@ -85,6 +87,25 @@ func (n *fakeNet) Connect() bool {
 }
 
 func (n *fakeNet) DistribParent() string { return "parent" }
+
+func (n *fakeNet) SetListen(ip string, port uint32) error {
+	if port == 1 {
+		return errors.New("port 1 is taken")
+	}
+	n.mu.Lock()
+	n.listenIP, n.listenPort = ip, port
+	n.mu.Unlock()
+	return nil
+}
+
+func (n *fakeNet) ListenAddr() (string, uint32) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.listenPort == 0 {
+		return "", 2234
+	}
+	return n.listenIP, n.listenPort
+}
 
 func (n *fakeNet) Disconnect() {
 	n.mu.Lock()

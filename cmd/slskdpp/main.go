@@ -15,6 +15,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/app"
 	"github.com/kiesxoxo/slskdpp/internal/client"
 	"github.com/kiesxoxo/slskdpp/internal/config"
+	"github.com/kiesxoxo/slskdpp/internal/logs"
 	"github.com/kiesxoxo/slskdpp/internal/version"
 )
 
@@ -89,6 +90,13 @@ func main() {
 		return
 	}
 
+	// The daemon also logs to files and keeps recent records for the API.
+	h, err := logs.New(logs.Config{Level: logLevel(cfg.LogLevel), Dir: logDir(cfg), KeepDays: cfg.LogKeepDays})
+	log = slog.New(h)
+	slog.SetDefault(log)
+	if err != nil {
+		log.Warn("cannot write log files; logging to stderr only", "err", err)
+	}
 	log.Info("starting slskdpp", "version", version.String())
 	a, err := app.New(cfg, log)
 	if err != nil {
@@ -116,11 +124,22 @@ func restart(log *slog.Logger) {
 }
 
 func newLogger(level string) *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel(level)}))
+}
+
+func logLevel(level string) slog.Level {
 	var lv slog.Level
 	if err := lv.UnmarshalText([]byte(level)); err != nil {
 		lv = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lv}))
+	return lv
+}
+
+func logDir(cfg config.Config) string {
+	if !cfg.LogFiles {
+		return ""
+	}
+	return cfg.LogDir()
 }
 
 func fatal(err error) {

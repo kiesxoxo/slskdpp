@@ -16,6 +16,16 @@
 - slskd's application API: the full application state at
   `GET /api/v0/application`, `version/latest`, `gc`, `loopback`, and restart
   (`PUT`) and shutdown (`DELETE`), which need a login rather than an API key.
+- slskd's options API: `GET /api/v0/options` and `/options/startup` show the
+  config as slskd's options with secrets redacted; `PATCH /api/v0/options`
+  moves the Soulseek listen address and port without a restart; and
+  `/options/yaml` reads, checks and rewrites the config file (keeping a
+  `.bak`). Changing anything needs the new `web.remote_configuration` option,
+  off by default as in slskd.
+- slskd's logs API: `GET /api/v0/logs/live` returns the latest 100 log
+  records, and `/api/v0/logs/files` lists and serves the log files.
+- Log files: the log is also written to daily files in `<data>/logs`, kept
+  for 7 days. New `log_files` and `log_keep_days` options control this.
 
 ## [0.2.0] - 2026-10-31
 

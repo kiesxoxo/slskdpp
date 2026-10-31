@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -393,4 +394,53 @@ func TestFileConnections(t *testing.T) {
 	h.mu.Unlock()
 	send(78)
 	_ = alice
+}
+
+func TestRelisten(t *testing.T) {
+	free := func() uint32 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		return uint32(ln.Addr().(*net.TCPAddr).Port)
+	}
+	first, second := free(), free()
+	c := New(ServerConfig{Username: "me", ListenPort: first}, Handlers{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := c.SetListen("127.0.0.1", second); err == nil {
+		t.Error("moved the listener before listening")
+	}
+	if err := c.peers.Listen(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reachable := func(port uint32) bool {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err == nil {
+			conn.Close()
+		}
+		return err == nil
+	}
+	if !reachable(first) {
+		t.Fatal("not listening on the first port")
+	}
+	if err := c.SetListen("127.0.0.1", second); err != nil {
+		t.Fatal(err)
+	}
+	if ip, port := c.ListenAddr(); ip != "127.0.0.1" || port != second {
+		t.Errorf("listen address %s:%d", ip, port)
+	}
+	if !reachable(second) || reachable(first) {
+		t.Errorf("after moving: second %v, first %v", reachable(second), reachable(first))
+	}
+	// A port that cannot be opened leaves the listener where it was.
+	busy, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer busy.Close()
+	if err := c.SetListen("127.0.0.1", uint32(busy.Addr().(*net.TCPAddr).Port)); err == nil {
+		t.Error("moved onto a busy port")
+	}
+	if _, port := c.ListenAddr(); port != second || !reachable(second) {
+		t.Error("failed move changed the listener")
+	}
 }

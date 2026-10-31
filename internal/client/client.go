@@ -251,6 +251,19 @@ func (c *Client) PeerAddress(ctx context.Context, username string) (protocol.Pee
 // ServerStatus describes the server connection.
 func (c *Client) ServerStatus() ServerStatus { return c.srv.Status() }
 
+// SetListen moves the peer listener and tells the server the new port.
+// ip "" listens on every address.
+func (c *Client) SetListen(ip string, port uint32) error {
+	if err := c.peers.Relisten(ip, port); err != nil {
+		return err
+	}
+	c.srv.SetListenPort(port)
+	return nil
+}
+
+// ListenAddr is the address ("" for all) and port peers can reach us on.
+func (c *Client) ListenAddr() (string, uint32) { return c.peers.ListenAddr() }
+
 // Disconnect leaves the server until Connect.
 func (c *Client) Disconnect() { c.srv.Disconnect() }
 
