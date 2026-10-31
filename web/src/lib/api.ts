@@ -209,7 +209,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new ApiError(res.status, msg);
   }
-  return res.status === 204 ? (undefined as T) : res.json();
+  // 202s and the like may come without a body.
+  const text = await res.text();
+  return text ? JSON.parse(text) : (undefined as T);
 }
 
 const user = (u: string) => '/users/' + encodeURIComponent(u);

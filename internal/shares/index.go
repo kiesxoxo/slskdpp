@@ -255,14 +255,16 @@ func (x *Index) RemoveRoot(alias string) error {
 	return nil
 }
 
-// Rescan re-reads every share.
+// Rescan re-reads every share. Stats show it as scanning at once, so a
+// caller reading them next sees the scan it asked for.
 func (x *Index) Rescan() {
 	x.mu.Lock()
+	defer x.mu.Unlock()
 	for _, r := range x.roots {
 		x.dirty[r.Path] = true
 	}
-	x.mu.Unlock()
-	x.wake()
+	x.stats.Scanning = true
+	x.wake() // under mu, so a scan ending now sees it queued
 }
 
 func (x *Index) wake() {
@@ -377,7 +379,7 @@ func (x *Index) scanDirty(ctx context.Context) {
 	x.mu.Unlock()
 	defer func() {
 		x.mu.Lock()
-		x.stats.Scanning = false
+		x.stats.Scanning = len(x.kick) > 0 // another scan is queued
 		x.stats.LastScan = time.Now()
 		x.mu.Unlock()
 		x.refreshStats()

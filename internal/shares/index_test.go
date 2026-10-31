@@ -199,6 +199,19 @@ func TestWatchAndRescan(t *testing.T) {
 		t.Error("stale browse response")
 	}
 
+	// A rescan shows as scanning straight away, and stops when done.
+	e.x.Rescan()
+	if !e.x.Stats().Scanning {
+		t.Error("not scanning right after Rescan")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for e.x.Stats().Scanning {
+		if time.Now().After(deadline) {
+			t.Fatal("still scanning")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	// A share that disappears (an unmounted disk) keeps its index.
 	os.Rename(e.music, e.music+".gone")
 	e.x.Rescan()

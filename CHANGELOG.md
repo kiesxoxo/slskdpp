@@ -27,6 +27,13 @@
 - Log files: the log is also written to daily files in `<data>/logs`, kept
   for 7 days. New `log_files` and `log_keep_days` options control this.
 
+### Fixed
+
+- Rescan on the Shares page, and searching a wishlist entry now, failed with
+  "Unexpected end of JSON input".
+- A rescan shows as scanning as soon as it is asked for, so the Shares page
+  follows it, and slskd's `PUT /api/v0/shares` refuses a second one at once.
+
 ## [0.2.0] - 2026-10-31
 
 ### Web UI
