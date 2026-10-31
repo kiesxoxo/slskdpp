@@ -175,7 +175,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    a.signSession(c.Username, expires),
-		Path:     "/",
+		Path:     cookiePath(r),
 		Expires:  expires,
 		HttpOnly: true,
 		Secure:   isHTTPS(r),
@@ -189,15 +189,22 @@ func (a *API) session(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   isHTTPS(r),
-		SameSite: http.SameSiteStrictMode,
-	})
+	// The login may have come through the URL base or not; clear both.
+	paths := []string{"/"}
+	if p := cookiePath(r); p != "/" {
+		paths = append(paths, p)
+	}
+	for _, p := range paths {
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookie,
+			Value:    "",
+			Path:     p,
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   isHTTPS(r),
+			SameSite: http.SameSiteStrictMode,
+		})
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

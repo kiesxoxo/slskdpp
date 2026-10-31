@@ -13,6 +13,7 @@ directories:
 
 web:
   listen: ":5030"     # web UI and API
+  url_base: ""        # serve under a path such as /slskd behind a reverse proxy; the root still works
   username: slskdpp
   password: ""        # empty: a random password is generated and logged at startup
   api_keys: []        # for scripts (X-API-Key header); also SLSKDPP_API_KEY; more can be made in Settings
@@ -40,6 +41,14 @@ hooks:
   on_download: ""   # e.g. beet import -q "$SLSKDPP_PATH"
   on_folder: ""
   webhook: ""
+
+# Prometheus metrics, as slskd's metrics options. With a username and
+# password they use basic auth; otherwise an API key or a login.
+metrics:
+  enabled: false
+  path: /metrics
+  username: ""
+  password: ""
 
 # Folders to share, as "/path" (shared under the folder's name) or
 # "Alias=/path". More can be added from the web UI.

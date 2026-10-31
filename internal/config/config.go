@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,7 @@ type Config struct {
 	Transfers   Transfers   `yaml:"transfers"`
 	Hooks       Hooks       `yaml:"hooks"`
 	Wishlist    Wishlist    `yaml:"wishlist"`
+	Metrics     Metrics     `yaml:"metrics"`
 	Shares      []string    `yaml:"shares"`
 	LogLevel    string      `yaml:"log_level"`
 	// LogFiles writes the log to daily files in <data>/logs too, kept for
@@ -84,6 +86,10 @@ type Web struct {
 	Listen   string `yaml:"listen"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// URLBase serves the UI and API under this path, such as /slskd
+	// behind a reverse proxy, as slskd's web.url_base does. Paths without
+	// it are served too.
+	URLBase string `yaml:"url_base"`
 	// APIKeys are accepted in X-API-Key or Authorization: Bearer headers,
 	// besides keys created in the web UI.
 	APIKeys []string `yaml:"api_keys"`
@@ -101,6 +107,16 @@ type Web struct {
 	RemoteConfiguration bool `yaml:"remote_configuration"`
 }
 
+// Metrics serves Prometheus metrics, as slskd's metrics options do.
+type Metrics struct {
+	Enabled bool   `yaml:"enabled"`
+	Path    string `yaml:"path"`
+	// Username and Password, if both set, protect the metrics with basic
+	// auth; otherwise they need an API key or a login.
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+}
+
 func Default() Config {
 	return Config{
 		Soulseek: Soulseek{
@@ -110,6 +126,7 @@ func Default() Config {
 		Directories: Directories{Data: "data"},
 		Transfers:   Transfers{MaxAttempts: 5, MaxSources: 3, UploadSlots: 2, MaxQueuedPerUser: 500},
 		Web:         Web{Listen: ":5030", Username: "slskdpp"},
+		Metrics:     Metrics{Path: "/metrics"},
 		LogLevel:    "info",
 		LogFiles:    true,
 		LogKeepDays: 7,
@@ -149,6 +166,7 @@ func Load(path string) (Config, error) {
 	if err := cfg.ApplyEnv(); err != nil {
 		return cfg, err
 	}
+	cfg.Web.URLBase = CleanURLBase(cfg.Web.URLBase)
 	if cfg.Directories.Downloads == "" {
 		cfg.Directories.Downloads = filepath.Join(cfg.Directories.Data, "downloads")
 	}
@@ -161,16 +179,19 @@ func Load(path string) (Config, error) {
 // ApplyEnv applies SLSKDPP_* environment overrides.
 func (cfg *Config) ApplyEnv() error {
 	strs := map[string]*string{
-		"SLSKDPP_USERNAME":       &cfg.Soulseek.Username,
-		"SLSKDPP_PASSWORD":       &cfg.Soulseek.Password,
-		"SLSKDPP_SERVER":         &cfg.Soulseek.Server,
-		"SLSKDPP_DATA_DIR":       &cfg.Directories.Data,
-		"SLSKDPP_DOWNLOADS_DIR":  &cfg.Directories.Downloads,
-		"SLSKDPP_INCOMPLETE_DIR": &cfg.Directories.Incomplete,
-		"SLSKDPP_WEB_LISTEN":     &cfg.Web.Listen,
-		"SLSKDPP_WEB_USERNAME":   &cfg.Web.Username,
-		"SLSKDPP_WEB_PASSWORD":   &cfg.Web.Password,
-		"SLSKDPP_LOG_LEVEL":      &cfg.LogLevel,
+		"SLSKDPP_USERNAME":         &cfg.Soulseek.Username,
+		"SLSKDPP_PASSWORD":         &cfg.Soulseek.Password,
+		"SLSKDPP_SERVER":           &cfg.Soulseek.Server,
+		"SLSKDPP_DATA_DIR":         &cfg.Directories.Data,
+		"SLSKDPP_DOWNLOADS_DIR":    &cfg.Directories.Downloads,
+		"SLSKDPP_INCOMPLETE_DIR":   &cfg.Directories.Incomplete,
+		"SLSKDPP_WEB_LISTEN":       &cfg.Web.Listen,
+		"SLSKDPP_WEB_USERNAME":     &cfg.Web.Username,
+		"SLSKDPP_WEB_PASSWORD":     &cfg.Web.Password,
+		"SLSKDPP_WEB_URL_BASE":     &cfg.Web.URLBase,
+		"SLSKDPP_METRICS_USERNAME": &cfg.Metrics.Username,
+		"SLSKDPP_METRICS_PASSWORD": &cfg.Metrics.Password,
+		"SLSKDPP_LOG_LEVEL":        &cfg.LogLevel,
 	}
 	for key, dst := range strs {
 		if v, ok := os.LookupEnv(key); ok {
@@ -190,7 +211,24 @@ func (cfg *Config) ApplyEnv() error {
 		}
 		cfg.Soulseek.ListenPort = uint32(port)
 	}
+	if v, ok := os.LookupEnv("SLSKDPP_METRICS_ENABLED"); ok {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("SLSKDPP_METRICS_ENABLED: %w", err)
+		}
+		cfg.Metrics.Enabled = on
+	}
 	return nil
+}
+
+// CleanURLBase gives a URL base one leading slash and no trailing one;
+// "" and "/" mean none, which is "".
+func CleanURLBase(base string) string {
+	base = strings.Trim(strings.TrimSpace(base), "/")
+	if base == "" {
+		return ""
+	}
+	return "/" + base
 }
 
 // Validate reports settings that prevent connecting to the network.
@@ -204,6 +242,12 @@ func (c Config) Validate() error {
 	}
 	if c.Soulseek.ListenPort == 0 || c.Soulseek.ListenPort > 65535 {
 		errs = append(errs, errors.New("soulseek.listen_port must be 1-65535"))
+	}
+	if strings.ContainsAny(c.Web.URLBase, "?#\\ ") || slices.Contains(strings.Split(c.Web.URLBase, "/"), "..") {
+		errs = append(errs, errors.New("web.url_base must be a plain path such as /slskd"))
+	}
+	if c.Metrics.Enabled && (!strings.HasPrefix(c.Metrics.Path, "/") || strings.ContainsAny(c.Metrics.Path, "{}?# \t")) {
+		errs = append(errs, errors.New("metrics.path must start with /"))
 	}
 	if c.LogKeepDays < 0 {
 		errs = append(errs, errors.New("log_keep_days must not be negative"))

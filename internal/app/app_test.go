@@ -635,3 +635,47 @@ func TestStopAndRestart(t *testing.T) {
 	// Run has returned: the instance no longer answers its peers' server.
 	eventually(t, "the session to end", 5*time.Second, func() bool { return !in.app.client.LoggedIn() })
 }
+
+// TestURLBase runs an instance under a URL base with metrics on, as
+// behind a reverse proxy at /slskd.
+func TestURLBase(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ts, err := testserver.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ts.Close() })
+	in := start(t, ctx, ts.Addr(), "based", func(c *config.Config) {
+		c.Web.URLBase = "/slskd"
+		c.Metrics.Enabled = true
+	})
+
+	var app map[string]any
+	if code := in.call("GET", "/slskd/api/v0/application", nil, &app); code != 200 || app["server"] == nil {
+		t.Errorf("application: %d %v", code, app)
+	}
+	var opts struct{ Web struct{ URLBase string } }
+	if code := in.call("GET", "/slskd/api/v0/options", nil, &opts); code != 200 || opts.Web.URLBase != "/slskd" {
+		t.Errorf("options: %d %+v", code, opts)
+	}
+	get := func(path string) (int, string) {
+		req, _ := http.NewRequest("GET", in.srv.URL+path, nil)
+		req.Header.Set("X-API-Key", apiKey)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	for _, path := range []string{"/health", "/slskd/health"} {
+		if code, body := get(path); code != 200 || body != "Healthy" {
+			t.Errorf("%s: %d %q", path, code, body)
+		}
+	}
+	if code, body := get("/slskd/metrics"); code != 200 || !strings.Contains(body, "slskdpp_server_connected 1") {
+		t.Errorf("metrics: %d\n%s", code, body)
+	}
+}

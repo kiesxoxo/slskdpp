@@ -51,4 +51,7 @@ WORKDIR /data
 VOLUME ["/data"]
 # Web UI, and the Soulseek listen port (forward it on your router).
 EXPOSE 5030 2234
+# The image has no curl, so the binary checks /health itself.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s \
+    CMD ["/usr/local/bin/slskdpp", "-config", "/config/slskdpp.yaml", "-healthcheck"]
 ENTRYPOINT ["/usr/local/bin/slskdpp", "-config", "/config/slskdpp.yaml"]

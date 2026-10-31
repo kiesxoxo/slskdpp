@@ -4,6 +4,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"database/sql"
@@ -64,6 +65,10 @@ type Config struct {
 	// RemoteFiles lets slskd clients delete files and folders in those
 	// directories.
 	RemoteFiles bool
+	// URLBase serves everything under this path too, such as /slskd; see
+	// withBase. Empty means only the root.
+	URLBase string
+	Metrics MetricsConfig
 	// UI is the built web app. Without an index.html a placeholder page
 	// is served.
 	UI     fs.FS
@@ -210,11 +215,17 @@ func New(cfg Config, d Deps) (http.Handler, error) {
 
 	a.routesV0(mux)
 
+	mux.HandleFunc("GET /health", a.health)
+	if m := cfg.Metrics; m.Enabled {
+		path := cmp.Or(m.Path, "/metrics")
+		mux.HandleFunc("GET "+path, a.metricsAuth(a.metrics))
+	}
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no such endpoint")
 	})
 	mux.Handle("/", a.static())
-	return securityHeaders(mux), nil
+	return withBase(cfg.URLBase, securityHeaders(mux)), nil
 }
 
 func securityHeaders(next http.Handler) http.Handler {

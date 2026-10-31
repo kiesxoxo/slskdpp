@@ -35,6 +35,7 @@ func main() {
 	configPath := flag.String("config", "slskdpp.yaml", "path to config file")
 	checkLogin := flag.Bool("check-login", false, "log in once, print the result and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	checkHealth := flag.Bool("healthcheck", false, "ask the running daemon whether it is healthy; exit 0 if so")
 	flag.Usage = func() {
 		fmt.Fprint(flag.CommandLine.Output(), usage)
 		flag.PrintDefaults()
@@ -48,6 +49,13 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		fatal(err)
+	}
+	if *checkHealth {
+		// Needs no Soulseek account, so this comes before Validate.
+		if err := healthcheck(cfg); err != nil {
+			fatal(err)
+		}
+		return
 	}
 	log := newLogger(cfg.LogLevel)
 	slog.SetDefault(log)

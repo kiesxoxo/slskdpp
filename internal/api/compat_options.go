@@ -6,6 +6,7 @@ package api
 // needs remoteConfiguration.
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -106,9 +107,19 @@ func (a *API) v0OptionsFrom(cfg config.Config, listenIP string, listenPort uint3
 		// their remote parent folder, as with slskd's default.
 		"transfers": map[string]any{"download": map[string]any{"destination": map[string]any{"subdirectory": "${SOURCE_DIRECTORY}"}}},
 		"rooms":     []string{},
+		"metrics": map[string]any{
+			"enabled": cfg.Metrics.Enabled,
+			"url":     cmp.Or(cfg.Metrics.Path, "/metrics"),
+			"authentication": map[string]any{
+				// Without its own login it needs an API key; never open.
+				"disabled": false,
+				"username": cfg.Metrics.Username,
+				"password": v0Redacted,
+			},
+		},
 		"web": map[string]any{
 			"port":    webPort,
-			"urlBase": "/",
+			"urlBase": cmp.Or(config.CleanURLBase(cfg.Web.URLBase), "/"),
 			"authentication": map[string]any{
 				"disabled": false,
 				"username": cfg.Web.Username,

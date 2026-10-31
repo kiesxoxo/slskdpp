@@ -221,8 +221,13 @@ func (a *App) build() error {
 		DownloadDir:    cfg.Directories.Downloads,
 		IncompleteDir:  cfg.Directories.Incomplete,
 		RemoteFiles:    cfg.Web.RemoteFileManagement,
-		UI:             web.Dist(),
-		Logger:         log,
+		URLBase:        cfg.Web.URLBase,
+		Metrics: api.MetricsConfig{
+			Enabled: cfg.Metrics.Enabled, Path: cfg.Metrics.Path,
+			Username: cfg.Metrics.Username, Password: cfg.Metrics.Password,
+		},
+		UI:     web.Dist(),
+		Logger: log,
 	}, api.Deps{
 		Net: c, Searches: a.searches, Downloads: a.downloads, Uploads: a.uploads, Shares: a.shares,
 		Hooks: a.hooks, Wishlist: a.wishlist, Bus: a.bus, DB: a.db, Stop: a.Stop,

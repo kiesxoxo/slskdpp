@@ -6,7 +6,7 @@ type Handlers = Record<string, (data: any) => void>;
 // search's events (0 for global events only). onResync runs after the
 // stream reconnects, since events may have been missed meanwhile.
 export function subscribe(search: number, handlers: Handlers, onResync?: () => void): () => void {
-  const es = new EventSource(`/api/v1/events?search=${search}`);
+  const es = new EventSource(`api/v1/events?search=${search}`);
   let opened = false;
   es.addEventListener('open', () => {
     if (opened) onResync?.();

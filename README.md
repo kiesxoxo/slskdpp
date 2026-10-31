@@ -143,6 +143,8 @@ variable:
 | `SLSKDPP_WEB_USERNAME`, `SLSKDPP_WEB_PASSWORD` | web login (default user `slskdpp`) |
 | `SLSKDPP_API_KEY` | an API key for scripts |
 | `SLSKDPP_WEB_TRUSTED_PROXIES` | reverse proxies, comma-separated; see [Networking](#networking) |
+| `SLSKDPP_WEB_URL_BASE` | serve under a path such as `/slskd`; see [Networking](#networking) |
+| `SLSKDPP_METRICS_ENABLED`, `SLSKDPP_METRICS_USERNAME`, `SLSKDPP_METRICS_PASSWORD` | Prometheus metrics; see [Metrics](#metrics) |
 | `SLSKDPP_LOG_LEVEL` | `debug`, `info`, `warn` or `error` |
 
 If `web.password` is empty, slskdpp makes up a password at startup and prints
@@ -237,6 +239,28 @@ privileges). Each entry has a query and optional filters. With **download the
 best match** on, the first time an album passes the filters slskdpp fetches the
 whole folder from the best source and marks the entry done.
 
+### Health and metrics
+
+`GET /health` answers `Healthy`, or `Degraded` while the Soulseek server is
+not connected, without a login, as slskd's does. `slskdpp -healthcheck` asks
+the running daemon and exits 0 if it answers, which the Docker image uses as
+its `HEALTHCHECK` since it has no curl.
+
+### Metrics
+
+With `metrics.enabled`, slskdpp serves Prometheus metrics at `/metrics` (or
+`metrics.path`): transfers by state, transfer speeds, the server connection,
+share totals and Go runtime figures. With `metrics.username` and
+`metrics.password` set they need basic auth; otherwise an API key, which
+Prometheus can send as a bearer token:
+
+```yaml
+scrape_configs:
+  - job_name: slskdpp
+    authorization: { credentials: <an slskdpp API key> }
+    static_configs: [{ targets: ["slskdpp:5030"] }]
+```
+
 ### Hooks
 
 When a download finishes, slskdpp can run a command, call a webhook, or both:
@@ -302,7 +326,8 @@ url_base = /
 download_dir = /path/to/slskdpp/downloads
 ```
 
-`download_dir` must be slskdpp's downloads folder as soularr sees it. Files land
+If slskdpp runs under a path behind a proxy (`web.url_base: /slskd`), set
+`url_base = /slskd` to match. `download_dir` must be slskdpp's downloads folder as soularr sees it. Files land
 in `<downloads>/<remote folder name>/<file>`, which is where soularr looks.
 
 For Lidarr's [Tubifarry](https://github.com/TypNull/Tubifarry) plugin, add an
@@ -339,6 +364,21 @@ For browser access from outside your network, put the web UI behind a reverse
 proxy with HTTPS. Session cookies switch to `Secure` when the proxy sends
 `X-Forwarded-Proto: https`. Server-sent events need buffering off; slskdpp
 sends `X-Accel-Buffering: no` for nginx.
+
+To serve slskdpp under a path rather than its own host name, set
+`web.url_base`, as with slskd's `url_base`. slskdpp then answers under that
+path and at the root, so it works whether or not the proxy strips the prefix:
+
+```yaml
+web:
+  url_base: /slskd
+```
+
+```caddy
+handle /slskd* {
+  reverse_proxy slskdpp:5030
+}
+```
 
 After 5 failed logins from one address, logins from it are refused for a while.
 Behind a proxy every request seems to come from the proxy, so tell slskdpp

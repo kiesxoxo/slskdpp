@@ -30,3 +30,39 @@ func TestLoadKeepsPath(t *testing.T) {
 		t.Errorf("file: %+v", cfg)
 	}
 }
+
+func TestURLBase(t *testing.T) {
+	for in, want := range map[string]string{"": "", "/": "", "slskd": "/slskd", "/slskd/": "/slskd", " /a/b/ ": "/a/b"} {
+		if got := CleanURLBase(in); got != want {
+			t.Errorf("CleanURLBase(%q) = %q, want %q", in, got, want)
+		}
+	}
+	t.Setenv("SLSKDPP_WEB_URL_BASE", "slskd/")
+	cfg, err := Load("")
+	if err != nil || cfg.Web.URLBase != "/slskd" {
+		t.Errorf("env: %q %v", cfg.Web.URLBase, err)
+	}
+	cfg.Soulseek.Username, cfg.Soulseek.Password = "me", "pw"
+	for _, bad := range []string{"/a/../b", "/a?b", "/a b"} {
+		cfg.Web.URLBase = bad
+		if cfg.Validate() == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestMetrics(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil || cfg.Metrics.Enabled || cfg.Metrics.Path != "/metrics" {
+		t.Errorf("defaults: %+v %v", cfg.Metrics, err)
+	}
+	t.Setenv("SLSKDPP_METRICS_ENABLED", "true")
+	t.Setenv("SLSKDPP_METRICS_USERNAME", "prom")
+	if cfg, err := Load(""); err != nil || !cfg.Metrics.Enabled || cfg.Metrics.Username != "prom" {
+		t.Errorf("env: %+v %v", cfg.Metrics, err)
+	}
+	t.Setenv("SLSKDPP_METRICS_ENABLED", "maybe")
+	if _, err := Load(""); err == nil {
+		t.Error("bad bool accepted")
+	}
+}

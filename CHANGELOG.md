@@ -26,6 +26,21 @@
   records, and `/api/v0/logs/files` lists and serves the log files.
 - Log files: the log is also written to daily files in `<data>/logs`, kept
   for 7 days. New `log_files` and `log_keep_days` options control this.
+- `web.url_base` (`SLSKDPP_WEB_URL_BASE`) serves the UI and API under a path
+  such as `/slskd` behind a reverse proxy, as slskd's `url_base` does. The
+  root keeps working, and the session cookie is limited to the path it was
+  set under.
+- `GET /health`, without a login, answers `Healthy` or `Degraded` as slskd's
+  does, and `slskdpp -healthcheck` checks it from the command line. The
+  Docker image uses it as its `HEALTHCHECK`.
+- Prometheus metrics at `/metrics`, off unless `metrics.enabled` is set:
+  transfers by state, speeds, the server connection, share totals and Go
+  runtime figures, behind basic auth or an API key.
+
+### Changed
+
+- The web UI uses relative URLs, so the same build works under any URL
+  base.
 
 ### Fixed
 
