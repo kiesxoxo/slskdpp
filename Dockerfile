@@ -4,6 +4,11 @@
 # run; build with --build-arg RUNTIME=alpine:3.20 to use them.
 ARG RUNTIME=gcr.io/distroless/static-debian12:nonroot
 
+# Where the binary comes from: "source" builds the UI and binary here;
+# "prebuilt" packages binaries already in prebuilt/<os>/<arch>[/<variant>]/,
+# as the release workflow does so images hold the released binaries.
+ARG BINARY=source
+
 # The UI and binary are built on the build machine's platform and the
 # binary cross-compiled, so multi-platform images need no emulation.
 FROM --platform=$BUILDPLATFORM node:22-alpine AS web
@@ -26,8 +31,17 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
     go build -trimpath -ldflags="-s -w -X github.com/kiesxoxo/slskdpp/internal/version.Version=$VERSION" \
     -o /out/slskdpp ./cmd/slskdpp
 
+FROM scratch AS binary-source
+COPY --from=build /out/slskdpp /slskdpp
+
+FROM scratch AS binary-prebuilt
+ARG TARGETPLATFORM
+COPY --chmod=0755 prebuilt/${TARGETPLATFORM}/slskdpp /slskdpp
+
+FROM binary-${BINARY} AS binary
+
 FROM ${RUNTIME}
-COPY --from=build /out/slskdpp /usr/local/bin/slskdpp
+COPY --from=binary /slskdpp /usr/local/bin/slskdpp
 # Settings come from /config/slskdpp.yaml if it exists, and from
 # SLSKDPP_* variables. State, downloads and partial files live in /data.
 ENV SLSKDPP_DATA_DIR=/data \

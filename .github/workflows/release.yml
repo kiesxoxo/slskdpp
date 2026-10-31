@@ -4,7 +4,12 @@ name: Release
 # version (it then tags the chosen commit itself), runs CI and publishes
 # binaries as a GitHub release and multi-platform images on ghcr.io.
 # Versions with a hyphen (v1.2.3-rc.1) are pre-releases and do not move
-# :latest.
+# :latest or :X.Y.
+#
+# The UI is built once (by CI) and each binary once; the images package
+# the same Linux binaries that go in the release. Images are pushed under
+# a candidate tag, smoke-tested, and only then given their release tags,
+# and the GitHub release is published last.
 
 on:
   push:
@@ -60,28 +65,23 @@ jobs:
           git push origin "refs/tags/$VERSION"
 
   binaries:
-    name: Binaries and GitHub release
+    name: Binaries
     needs: tag
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     env:
       VERSION: ${{ needs.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.tag.outputs.version }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Build the UI
-        working-directory: web
-        run: npm ci && npm run build
+      - name: Get the UI CI built
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
       - name: Build binaries
         run: |
           set -euo pipefail
@@ -95,6 +95,11 @@ jobs:
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch GOARM=$arm go build -trimpath \
               -ldflags "-s -w -X github.com/kiesxoxo/slskdpp/internal/version.Version=$VERSION" \
               -o "build/$name/$exe" ./cmd/slskdpp
+            # The Linux binaries also go in the images, laid out by Docker platform.
+            if [ "$os" = linux ]; then
+              mkdir -p "prebuilt/$os/$arch${arm:+/v$arm}"
+              cp "build/$name/$exe" "prebuilt/$os/$arch${arm:+/v$arm}/"
+            fi
             cp README.md slskdpp.example.yaml "build/$name/"
             [ -f LICENSE ] && cp LICENSE "build/$name/"
             [ "$os" = linux ] && cp packaging/slskdpp.service "build/$name/"
@@ -110,6 +115,115 @@ jobs:
         run: |
           tar -xzf dist/slskdpp_*_linux_amd64.tar.gz -C /tmp
           /tmp/slskdpp_*_linux_amd64/slskdpp -version | tee /dev/stderr | grep -qF "$VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-binaries
+          path: prebuilt
+
+  image:
+    name: Container images
+    needs: [tag, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+      PLATFORMS: linux/amd64,linux/arm64,linux/arm/v7
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-binaries
+          path: prebuilt
+      - id: names
+        run: |
+          image=ghcr.io/${GITHUB_REPOSITORY,,}
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "candidate=$image:candidate-${VERSION#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.names.outputs.image }}
+          tags: type=semver,pattern={{version}},value=${{ needs.tag.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=slskdpp
+            org.opencontainers.image.description=A small, headless Soulseek client with a web UI
+      # Packaging only: the binaries are already built, so this copies them
+      # onto each platform's runtime image without compiling or emulating.
+      - name: Push the candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          build-args: BINARY=prebuilt
+          tags: ${{ steps.names.outputs.candidate }}
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Push the candidate alpine image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          build-args: |
+            BINARY=prebuilt
+            RUNTIME=alpine:3.20
+          tags: ${{ steps.names.outputs.candidate }}-alpine
+          labels: ${{ steps.meta.outputs.labels }}
+      - name: Smoke test the candidates
+        env:
+          CANDIDATE: ${{ steps.names.outputs.candidate }}
+        run: |
+          .github/smoke-test.sh "$CANDIDATE" "$VERSION"
+          .github/smoke-test.sh "$CANDIDATE-alpine" "$VERSION"
+      - name: Promote the candidates
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}
+          CANDIDATE: ${{ steps.names.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          v=${VERSION#v}
+          tags=("$v")
+          # Pre-releases get only their own version tag.
+          if [[ $v != *-* ]]; then
+            tags+=("${v%.*}" latest)
+          fi
+          for suffix in '' -alpine; do
+            args=()
+            for t in "${tags[@]}"; do args+=(-t "$IMAGE:$t$suffix"); done
+            docker buildx imagetools create "${args[@]}" "$CANDIDATE$suffix"
+          done
+          docker buildx imagetools inspect "$IMAGE:$v"
+
+  release:
+    name: GitHub release
+    needs: [tag, binaries, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist
+          path: dist
       - name: Release notes
         run: |
           # The CHANGELOG section for this version, up to the next heading.
@@ -131,54 +245,3 @@ jobs:
           pre=""
           case "$VERSION" in *-*) pre="--prerelease" ;; esac
           gh release create "$VERSION" dist/* --title "slskdpp ${VERSION}" --notes-file notes.md --verify-tag $pre
-
-  image:
-    name: Container images
-    needs: tag
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      matrix:
-        include:
-          - runtime: gcr.io/distroless/static-debian12:nonroot
-            suffix: ''
-          - runtime: alpine:3.20
-            suffix: '-alpine'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.tag.outputs.version }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          flavor: |
-            latest=false
-            suffix=${{ matrix.suffix }},onlatest=true
-          tags: |
-            type=semver,pattern={{version}},value=${{ needs.tag.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ needs.tag.outputs.version }}
-            type=raw,value=latest,enable=${{ !contains(needs.tag.outputs.version, '-') }}
-          labels: |
-            org.opencontainers.image.title=slskdpp
-            org.opencontainers.image.description=A small, headless Soulseek client with a web UI
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          build-args: |
-            VERSION=${{ needs.tag.outputs.version }}
-            RUNTIME=${{ matrix.runtime }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
