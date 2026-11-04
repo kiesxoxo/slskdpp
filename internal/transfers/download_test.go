@@ -252,6 +252,26 @@ func TestDownloadCompletes(t *testing.T) {
 	}
 }
 
+func TestEnqueueRepeats(t *testing.T) {
+	e := newEnv(t)
+	a, b := `@@bob\Music\Artist\Album\a.flac`, `@@bob\Music\Artist\Album\b.flac`
+	views, err := e.m.Enqueue("bob", []FileRequest{{Path: a, Size: 1}, {Path: b, Size: 2}, {Path: a, Size: 1}}, "")
+	if err != nil || len(views) != 3 || views[0].ID != views[2].ID || views[0].ID == views[1].ID {
+		t.Fatalf("Enqueue: %+v %v", views, err)
+	}
+	again, err := e.m.Enqueue("bob", []FileRequest{{Path: b, Size: 2}}, "")
+	if err != nil || len(again) != 1 || again[0].ID != views[1].ID {
+		t.Errorf("queuing b again: %+v %v", again, err)
+	}
+	if n := len(e.m.List()); n != 2 {
+		t.Errorf("%d downloads, want 2", n)
+	}
+	e.start() // all of it was saved
+	if n := len(e.m.ListUser("bob")); n != 2 {
+		t.Errorf("%d downloads after a restart, want 2", n)
+	}
+}
+
 func TestResumeAfterDrop(t *testing.T) {
 	e := newEnv(t)
 	data := payload(200_000)

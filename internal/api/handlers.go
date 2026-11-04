@@ -2,7 +2,6 @@ package api
 
 import (
 	"bufio"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -194,23 +193,7 @@ func viewDirs(dirs []protocol.Directory) []dirView {
 // writeDirList writes dirs as a JSON array one folder at a time, so a
 // share of 100,000 files never exists as one big document in memory.
 func writeDirList(w io.Writer, dirs []protocol.Directory) error {
-	if _, err := io.WriteString(w, "["); err != nil {
-		return err
-	}
-	for i, d := range dirs {
-		if i > 0 {
-			io.WriteString(w, ",")
-		}
-		b, err := json.Marshal(viewDir(d))
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(b); err != nil {
-			return err
-		}
-	}
-	_, err := io.WriteString(w, "]")
-	return err
+	return writeArray(w, len(dirs), func(i int) any { return viewDir(dirs[i]) })
 }
 
 // peerError maps a failed peer request to an HTTP status.
@@ -236,27 +219,16 @@ func (a *API) browse(w http.ResponseWriter, r *http.Request) {
 		peerError(w, err)
 		return
 	}
-	h := w.Header()
-	h.Set("Content-Type", "application/json")
-	h.Set("Cache-Control", "no-store")
-	h.Add("Vary", "Accept-Encoding")
-	var out io.Writer = w
-	if acceptsGzip(r) {
-		h.Set("Content-Encoding", "gzip")
-		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
-		defer gz.Close()
-		out = gz
-	}
-	bw := bufio.NewWriterSize(out, 32<<10)
-	defer bw.Flush() // before the gzip writer closes
-	name, _ := json.Marshal(user)
-	fmt.Fprintf(bw, `{"user":%s,"dirs":`, name)
-	if err := writeDirList(bw, list.Dirs); err != nil {
-		return // the response has started; the client sees a broken body
-	}
-	io.WriteString(bw, `,"private_dirs":`)
-	writeDirList(bw, list.PrivateDirs)
-	io.WriteString(bw, "}")
+	streamJSON(w, r, func(bw *bufio.Writer) {
+		name, _ := json.Marshal(user)
+		fmt.Fprintf(bw, `{"user":%s,"dirs":`, name)
+		if err := writeDirList(bw, list.Dirs); err != nil {
+			return
+		}
+		io.WriteString(bw, `,"private_dirs":`)
+		writeDirList(bw, list.PrivateDirs)
+		io.WriteString(bw, "}")
+	})
 }
 
 func (a *API) folder(w http.ResponseWriter, r *http.Request) {

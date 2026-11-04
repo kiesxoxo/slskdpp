@@ -47,7 +47,12 @@ func loadDownloads(db *sql.DB) ([]*Download, error) {
 	return out, rows.Err()
 }
 
-func insertDownload(db *sql.DB, d *Download) error {
+// execer is a database or a transaction.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func insertDownload(db execer, d *Download) error {
 	res, err := db.Exec(`INSERT INTO downloads (username, filename, size, dest, state, bytes, attempts, error, tried_users, next_attempt, created, updated, completed, batch)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		d.Username, d.Filename, d.Size, d.Dest, string(d.State), d.Bytes, d.Attempts, d.Error,
@@ -82,7 +87,7 @@ type Batch struct {
 	Created     time.Time
 }
 
-func insertBatch(db *sql.DB, b Batch) error {
+func insertBatch(db execer, b Batch) error {
 	_, err := db.Exec(`INSERT INTO download_batches (id, username, external_id, destination, created) VALUES (?, ?, ?, ?, ?)`,
 		b.ID, b.Username, b.ExternalID, b.Destination, ms(b.Created))
 	return err

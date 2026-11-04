@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/binary"
 	"fmt"
 	"strings"
 )
@@ -123,13 +124,13 @@ func readFiles(r *Reader) []File {
 	if n == 0 {
 		return nil
 	}
-	files := make([]File, 0, min(int(n), r.Remaining()/minFileSize))
+	files := make([]File, 0, r.capFor(n, minFileSize))
 	for i := uint32(0); i < n && r.Err() == nil; i++ {
 		r.Uint8()
 		f := File{Name: r.String(), Size: r.Uint64(), Ext: r.String()}
 		na := r.Uint32()
 		if na > 0 {
-			f.Attrs = make([]FileAttribute, 0, min(int(na), r.Remaining()/8))
+			f.Attrs = make([]FileAttribute, 0, r.capFor(na, 8))
 		}
 		for j := uint32(0); j < na && r.Err() == nil; j++ {
 			f.Attrs = append(f.Attrs, FileAttribute{Code: r.Uint32(), Value: r.Uint32()})
@@ -160,7 +161,7 @@ func readDirs(r *Reader) []Directory {
 	if n == 0 {
 		return nil
 	}
-	dirs := make([]Directory, 0, min(int(n), r.Remaining()/8))
+	dirs := make([]Directory, 0, r.capFor(n, 8))
 	for i := uint32(0); i < n && r.Err() == nil; i++ {
 		dirs = append(dirs, Directory{Name: r.String(), Files: readFiles(r)})
 	}
@@ -180,6 +181,18 @@ func EncodePeer(m PeerMessage) []byte {
 	w.Uint32(m.peerCode())
 	m.encode(&w)
 	return Frame(w.Bytes())
+}
+
+// EncodePeerParts is EncodePeer as consecutive pieces of one frame. An
+// Encoded message keeps its payload as the last piece instead of being
+// copied, so a share list sent to many users exists once in memory.
+func EncodePeerParts(m PeerMessage) [][]byte {
+	e, ok := m.(Encoded)
+	if !ok {
+		return [][]byte{EncodePeer(m)}
+	}
+	hdr := binary.LittleEndian.AppendUint32(make([]byte, 0, 8), uint32(4+len(e.Payload)))
+	return [][]byte{binary.LittleEndian.AppendUint32(hdr, e.Code), e.Payload}
 }
 
 // Encoded is a peer message whose payload was encoded ahead of time, such

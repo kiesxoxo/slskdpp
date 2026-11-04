@@ -26,15 +26,24 @@ func Open(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	// Only we read the database. SQLite gives its WAL and shared memory
+	// files the same mode.
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
 	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
 		"&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
-	// One connection: SQLite serializes writers anyway, and this keeps
-	// memory low and avoids SQLITE_BUSY between our own connections.
-	db.SetMaxOpenConns(1)
+	// A few connections: in WAL mode readers do not wait for the writer,
+	// so a long read such as building our share list does not hold up
+	// saving download state. SQLite still serializes writers, and every
+	// transaction starts with a write, so busy_timeout covers them.
+	db.SetMaxOpenConns(4)
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err

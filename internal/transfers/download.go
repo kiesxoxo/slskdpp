@@ -3,6 +3,7 @@
 package transfers
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -213,6 +214,10 @@ type Manager struct {
 	t        timing
 	limit    *bucket
 	kick     chan struct{}
+	// placeMu serializes moving finished files into place, so two with
+	// the same name cannot pick the same path. The move may copy across
+	// file systems, so it happens outside mu.
+	placeMu sync.Mutex
 
 	mu        sync.Mutex
 	ctx       context.Context
@@ -374,26 +379,38 @@ func (m *Manager) EnqueueWith(username string, files []FileRequest, opts Enqueue
 		if _, err := loadBatch(m.db, b.ID); err == nil {
 			return nil, ErrBatchExists
 		}
+	}
+	// One transaction for the lot: a folder can be hundreds of files.
+	tx, err := m.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if b := opts.Batch; b != nil {
 		nb := *b
 		nb.Username, nb.Destination = username, dest
 		if nb.Created.IsZero() {
 			nb.Created = time.Now()
 		}
-		if err := insertBatch(m.db, nb); err != nil {
+		if err := insertBatch(tx, nb); err != nil {
 			return nil, err
 		}
 		batch = b.ID
 	}
-	var out []View
+	active := map[string]*Download{}
+	for _, d := range m.downloads {
+		if !d.State.Done() && d.Username == username {
+			active[d.Filename] = d
+		}
+	}
+	var out, added []*Download
 	now := time.Now()
 	for _, f := range files {
 		if f.Path == "" {
 			continue
 		}
-		if d := m.findLocked(func(d *Download) bool {
-			return !d.State.Done() && d.Username == username && d.Filename == f.Path
-		}); d != nil {
-			out = append(out, d.view())
+		if d := active[f.Path]; d != nil {
+			out = append(out, d)
 			continue
 		}
 		d := &Download{
@@ -403,16 +420,27 @@ func (m *Manager) EnqueueWith(username string, files []FileRequest, opts Enqueue
 		if dest != "" {
 			d.Dest = dest + "/" + cleanName(path.Base(strings.ReplaceAll(f.Path, `\`, "/")))
 		}
-		if err := insertDownload(m.db, d); err != nil {
-			return out, err
+		if err := insertDownload(tx, d); err != nil {
+			return nil, err
 		}
+		active[f.Path] = d
+		out = append(out, d)
+		added = append(added, d)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	for _, d := range added {
 		m.downloads[d.ID] = d
 		m.cfg.OnUpdate(d.view())
-		out = append(out, d.view())
+	}
+	views := make([]View, len(out))
+	for i, d := range out {
+		views[i] = d.view()
 	}
 	go m.net.WatchUser(username)
 	m.wake()
-	return out, nil
+	return views, nil
 }
 
 // placeTimeout bounds how long PlaceInQueue waits for the peer.
@@ -470,7 +498,21 @@ func (m *Manager) List() []View {
 	for _, d := range m.downloads {
 		out = append(out, d.view())
 	}
-	slices.SortFunc(out, func(a, b View) int { return int(a.ID - b.ID) })
+	slices.SortFunc(out, func(a, b View) int { return cmp.Compare(a.ID, b.ID) })
+	return out
+}
+
+// ListUser returns username's downloads, oldest first.
+func (m *Manager) ListUser(username string) []View {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []View
+	for _, d := range m.downloads {
+		if d.Username == username {
+			out = append(out, d.view())
+		}
+	}
+	slices.SortFunc(out, func(a, b View) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 
@@ -737,19 +779,23 @@ func (m *Manager) HandleFileConn(username string, token uint32, conn net.Conn) {
 	d.speed = 0
 	d.started = time.Now()
 	m.saveLocked(d)
-	part, size := m.partPath(d), d.Size
+	part, size, dest := m.partPath(d), d.Size, d.Dest
 	m.mu.Unlock()
 
 	err := m.receive(ctx, d, conn, part, size)
+	var final string
+	if err == nil {
+		final, err = m.place(part, size, dest)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	d.cancel = nil
 	if d.State != StateTransferring || m.downloads[d.ID] != d {
-		return // cancelled or removed meanwhile
+		return // cancelled or removed meanwhile; a file moved into place stays
 	}
 	if err == nil {
-		err = m.finishLocked(d, part)
+		m.completeLocked(d, final)
 	}
 	if err != nil {
 		// What is on disk is what the next attempt resumes from.
@@ -845,23 +891,28 @@ func (m *Manager) progress(d *Download, bytes uint64, speed float64) {
 	m.mu.Unlock()
 }
 
-// finishLocked checks the received file and moves it into place.
-func (m *Manager) finishLocked(d *Download, part string) error {
+// place checks a received file and moves it to dest under the downloads
+// directory, or next to it if that name is taken, returning where it went.
+func (m *Manager) place(part string, size uint64, dest string) (string, error) {
 	st, err := os.Stat(part)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if uint64(st.Size()) != d.Size {
+	if uint64(st.Size()) != size {
 		os.Remove(part)
-		return fmt.Errorf("received %d bytes, expected %d", st.Size(), d.Size)
+		return "", fmt.Errorf("received %d bytes, expected %d", st.Size(), size)
 	}
-	final := uniquePath(filepath.Join(m.cfg.DownloadDir, filepath.FromSlash(d.Dest)))
+	m.placeMu.Lock()
+	defer m.placeMu.Unlock()
+	final := uniquePath(filepath.Join(m.cfg.DownloadDir, filepath.FromSlash(dest)))
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-		return err
+		return "", err
 	}
-	if err := moveFile(part, final); err != nil {
-		return err
-	}
+	return final, moveFile(part, final)
+}
+
+// completeLocked records that d's file is in place at final.
+func (m *Manager) completeLocked(d *Download, final string) {
 	if rel, err := filepath.Rel(m.cfg.DownloadDir, final); err == nil {
 		d.Dest = filepath.ToSlash(rel)
 	}
@@ -872,7 +923,6 @@ func (m *Manager) finishLocked(d *Download, part string) error {
 	m.saveLocked(d)
 	m.cfg.OnComplete(d.view(), final)
 	m.folderDoneLocked(d)
-	return nil
 }
 
 // topFolder is the first part of a download's path, the folder it was
@@ -918,8 +968,10 @@ func (m *Manager) schedule() {
 	now := time.Now()
 	loggedIn := m.net.LoggedIn()
 	ids := make([]int64, 0, len(m.downloads))
-	for id := range m.downloads {
-		ids = append(ids, id)
+	for id, d := range m.downloads {
+		if !d.State.Done() {
+			ids = append(ids, id)
+		}
 	}
 	slices.Sort(ids) // oldest first
 	// One request per user at a time keeps a folder in order in the

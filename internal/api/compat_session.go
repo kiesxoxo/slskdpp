@@ -32,13 +32,8 @@ type jwtClaims struct {
 	Expires  int64  `json:"exp"`
 }
 
-// jwtKey signs tokens. It is derived from the session key, so tokens and
-// session cookies cannot be passed off as each other.
-func (a *API) jwtKey() []byte {
-	m := hmac.New(sha256.New, a.cfg.SessionKey)
-	m.Write([]byte("slskd api token"))
-	return m.Sum(nil)
-}
+// jwtKey signs tokens; see signingKey.
+func (a *API) jwtKey() []byte { return a.signingKey("slskd api token") }
 
 func (a *API) jwtSign(signed string) string {
 	m := hmac.New(sha256.New, a.jwtKey())

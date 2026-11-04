@@ -7,10 +7,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/kiesxoxo/slskdpp/internal/version"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"github.com/kiesxoxo/slskdpp/internal/shares"
 	"github.com/kiesxoxo/slskdpp/internal/store"
 	"github.com/kiesxoxo/slskdpp/internal/transfers"
+	"github.com/kiesxoxo/slskdpp/internal/version"
 	"github.com/kiesxoxo/slskdpp/internal/wishlist"
 	"github.com/kiesxoxo/slskdpp/web"
 )
@@ -75,7 +77,7 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	db, err := store.Open(filepath.Join(cfg.Directories.Data, "slskdpp.db"))
+	db, err := store.Open(dbPath(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("database: %w", err)
 	}
@@ -86,6 +88,27 @@ func New(cfg config.Config, log *slog.Logger) (*App, error) {
 	}
 	return a, nil
 }
+
+func dbPath(cfg config.Config) string { return filepath.Join(cfg.Directories.Data, "slskdpp.db") }
+
+func sessionKeyPath(cfg config.Config) string {
+	return filepath.Join(cfg.Directories.Data, "session.key")
+}
+
+// private lists what slskdpp keeps for itself, which is never shared even
+// when a shared folder holds it, as one holding the downloads folder may.
+func private(cfg config.Config) []string {
+	db := dbPath(cfg)
+	out := []string{db, db + "-wal", db + "-shm", db + "-journal", sessionKeyPath(cfg), cfg.LogDir(), cfg.Directories.Incomplete}
+	if cfg.Path != "" {
+		out = append(out, cfg.Path, cfg.Path+".bak")
+	}
+	return out
+}
+
+// console is where the generated web password is shown: only there, not
+// in the log files or the log the API serves, which API keys can read.
+var console io.Writer = os.Stderr
 
 func (a *App) publish(typ string, search uint32, data any) {
 	a.bus.Publish(events.Event{Type: typ, Search: search, Data: data})
@@ -168,7 +191,8 @@ func (a *App) build() error {
 		roots = append(roots, shares.ParseRoot(s))
 	}
 	a.shares, err = shares.Open(shares.Config{
-		Roots: roots,
+		Roots:   roots,
+		Private: private(cfg),
 		OnChange: func() {
 			st := a.shares.Stats()
 			c.SetShared(uint32(st.Folders), uint32(st.Files))
@@ -201,10 +225,11 @@ func (a *App) build() error {
 	password := cfg.Web.Password
 	if password == "" {
 		password = api.RandomPassword()
-		log.Warn("web.password is not set; using a random password for this run",
-			"username", cfg.Web.Username, "password", password)
+		log.Warn("web.password is not set; using a random password for this run, shown on the console",
+			"username", cfg.Web.Username)
+		fmt.Fprintf(console, "slskdpp: web login for this run: username %s, password %s\n", cfg.Web.Username, password)
 	}
-	key, err := api.LoadOrCreateKey(filepath.Join(cfg.Directories.Data, "session.key"))
+	key, err := api.LoadOrCreateKey(sessionKeyPath(cfg))
 	if err != nil {
 		return fmt.Errorf("session key: %w", err)
 	}

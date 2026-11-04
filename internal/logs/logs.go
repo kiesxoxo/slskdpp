@@ -67,7 +67,8 @@ func New(cfg Config) (*Handler, error) {
 	c := &core{}
 	var err error
 	if cfg.Dir != "" {
-		if err = os.MkdirAll(cfg.Dir, 0o755); err == nil {
+		// Logs name users, addresses and paths: not for everyone.
+		if err = os.MkdirAll(cfg.Dir, 0o750); err == nil {
 			c.files = &dailyFile{dir: cfg.Dir, keep: cfg.KeepDays}
 			out = io.MultiWriter(out, lockedWriter{c})
 		}
@@ -179,7 +180,7 @@ func (d *dailyFile) Write(p []byte) (int, error) {
 		if d.f != nil {
 			d.f.Close()
 		}
-		f, err := os.OpenFile(filepath.Join(d.dir, "slskdpp-"+day+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		f, err := os.OpenFile(filepath.Join(d.dir, "slskdpp-"+day+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
 		if err != nil {
 			d.f = nil
 			return len(p), nil // stderr still has it; do not fail the log call

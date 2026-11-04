@@ -6,6 +6,7 @@ package api
 // strings follow slskd's.
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -219,6 +220,13 @@ func (a *API) v0StartSearch(w http.ResponseWriter, r *http.Request) {
 		minFiles: req.MinimumResponseFileCount, responseLimit: req.ResponseLimit, fileLimit: req.FileLimit,
 	}
 	a.v0.mu.Lock()
+	// Forget searches the manager has dropped, so the map stays small
+	// for clients that never delete theirs.
+	for old, o := range a.v0.byID {
+		if _, ok := a.searches.Get(o.search); !ok {
+			delete(a.v0.byID, old)
+		}
+	}
 	a.v0.byID[id] = vs
 	a.v0.mu.Unlock()
 	v0JSON(w, r, http.StatusOK, a.v0State(vs, s, false))
@@ -235,10 +243,12 @@ func (vs *v0Search) state() string {
 }
 
 func (a *API) v0State(vs *v0Search, s *search.Search, withResponses bool) map[string]any {
-	responses := a.v0Responses(vs, s)
+	// Clients poll this while a search runs, so counting must not build
+	// every file's details.
+	picked := a.v0Pick(vs, s)
 	files := 0
-	for _, resp := range responses {
-		files += resp["fileCount"].(int)
+	for _, resp := range picked {
+		files += resp.files
 	}
 	state := vs.state()
 	out := map[string]any{
@@ -248,7 +258,7 @@ func (a *API) v0State(vs *v0Search, s *search.Search, withResponses bool) map[st
 		"state":           state,
 		"isComplete":      state != "InProgress",
 		"startedAt":       vs.started.UTC().Format(time.RFC3339Nano),
-		"responseCount":   len(responses),
+		"responseCount":   len(picked),
 		"fileCount":       files,
 		"lockedFileCount": 0,
 		"responses":       []any{},
@@ -257,14 +267,53 @@ func (a *API) v0State(vs *v0Search, s *search.Search, withResponses bool) map[st
 		out["endedAt"] = vs.started.Add(vs.timeout).UTC().Format(time.RFC3339Nano)
 	}
 	if withResponses {
-		out["responses"] = responses
+		out["responses"] = v0Show(s, picked)
 	}
 	return out
 }
 
-// v0Responses regroups our folder hits into slskd's per-user responses,
-// applying the search's response filters.
+// v0Response is one user's slskd search response: their folder hits,
+// best first, and how many files those hold.
+type v0Response struct {
+	user  string
+	hits  []search.FolderHit
+	files int
+}
+
+// v0Responses is slskd's list of responses to a search.
 func (a *API) v0Responses(vs *v0Search, s *search.Search) []map[string]any {
+	return v0Show(s, a.v0Pick(vs, s))
+}
+
+// v0Show renders picked responses as slskd's.
+func v0Show(s *search.Search, picked []v0Response) []map[string]any {
+	out := make([]map[string]any, 0, len(picked))
+	for _, resp := range picked {
+		first := resp.hits[0]
+		files := make([]map[string]any, 0, resp.files)
+		for _, h := range resp.hits {
+			for _, f := range h.Files {
+				files = append(files, v0SearchFile(f))
+			}
+		}
+		out = append(out, map[string]any{
+			"username":          resp.user,
+			"token":             s.ID,
+			"fileCount":         resp.files,
+			"files":             files,
+			"lockedFileCount":   0,
+			"lockedFiles":       []any{},
+			"hasFreeUploadSlot": first.SlotFree,
+			"queueLength":       first.QueueLength,
+			"uploadSpeed":       first.UploadSpeed,
+		})
+	}
+	return out
+}
+
+// v0Pick regroups our folder hits into slskd's per-user responses,
+// applying the search's response filters.
+func (a *API) v0Pick(vs *v0Search, s *search.Search) []v0Response {
 	byUser := map[string][]search.FolderHit{}
 	for _, h := range s.Hits(search.Filter{}) {
 		byUser[h.User] = append(byUser[h.User], h)
@@ -277,35 +326,23 @@ func (a *API) v0Responses(vs *v0Search, s *search.Search) []map[string]any {
 	slices.SortFunc(users, func(x, y string) int {
 		return cmp.Or(cmp.Compare(byUser[y][0].Score, byUser[x][0].Score), cmp.Compare(x, y))
 	})
-	out := []map[string]any{}
+	var out []v0Response
 	total := 0
 	for _, u := range users {
 		hits := byUser[u]
 		first := hits[0]
-		var files []map[string]any
+		files := 0
 		for _, h := range hits {
-			for _, f := range h.Files {
-				files = append(files, v0SearchFile(f))
-			}
+			files += len(h.Files)
 		}
-		if vs.filter && (int(first.QueueLength) > vs.maxQueue || int(first.UploadSpeed) < vs.minSpeed || len(files) < vs.minFiles) {
+		if vs.filter && (int(first.QueueLength) > vs.maxQueue || int(first.UploadSpeed) < vs.minSpeed || files < vs.minFiles) {
 			continue
 		}
-		if len(out) >= vs.responseLimit || total+len(files) > vs.fileLimit {
+		if len(out) >= vs.responseLimit || total+files > vs.fileLimit {
 			break
 		}
-		total += len(files)
-		out = append(out, map[string]any{
-			"username":          u,
-			"token":             s.ID,
-			"fileCount":         len(files),
-			"files":             files,
-			"lockedFileCount":   0,
-			"lockedFiles":       []any{},
-			"hasFreeUploadSlot": first.SlotFree,
-			"queueLength":       first.QueueLength,
-			"uploadSpeed":       first.UploadSpeed,
-		})
+		total += files
+		out = append(out, v0Response{user: u, hits: hits, files: files})
 	}
 	return out
 }
@@ -552,13 +589,7 @@ func (a *API) v0Downloads(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) v0UserDownloads(w http.ResponseWriter, r *http.Request) {
 	user := r.PathValue("username")
-	var mine []transfers.View
-	for _, v := range a.downloads.List() {
-		if v.Username == user {
-			mine = append(mine, v)
-		}
-	}
-	groups := v0Group(mine, a.now())
+	groups := v0Group(a.downloads.ListUser(user), a.now())
 	if len(groups) == 0 {
 		v0JSON(w, r, http.StatusOK, map[string]any{"username": user, "directories": []any{}})
 		return
@@ -705,14 +736,6 @@ func v0DirNamed(d protocol.Directory, full bool) map[string]any {
 	return map[string]any{"name": d.Name, "fileCount": len(files), "files": files}
 }
 
-func v0Dirs(dirs []protocol.Directory) []map[string]any {
-	out := make([]map[string]any, len(dirs))
-	for i, d := range dirs {
-		out[i] = v0Dir(d)
-	}
-	return out
-}
-
 func (a *API) v0Browse(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), peerTimeout)
 	defer cancel()
@@ -721,11 +744,15 @@ func (a *API) v0Browse(w http.ResponseWriter, r *http.Request) {
 		peerError(w, err)
 		return
 	}
-	v0JSON(w, r, http.StatusOK, map[string]any{
-		"directoryCount":       len(list.Dirs),
-		"directories":          v0Dirs(list.Dirs),
-		"lockedDirectoryCount": len(list.PrivateDirs),
-		"lockedDirectories":    v0Dirs(list.PrivateDirs),
+	// One folder at a time, as for /api/v1: a share can be huge.
+	streamJSON(w, r, func(bw *bufio.Writer) {
+		fmt.Fprintf(bw, `{"directoryCount":%d,"directories":`, len(list.Dirs))
+		if err := writeArray(bw, len(list.Dirs), func(i int) any { return v0Dir(list.Dirs[i]) }); err != nil {
+			return
+		}
+		fmt.Fprintf(bw, `,"lockedDirectoryCount":%d,"lockedDirectories":`, len(list.PrivateDirs))
+		writeArray(bw, len(list.PrivateDirs), func(i int) any { return v0Dir(list.PrivateDirs[i]) })
+		bw.WriteString("}")
 	})
 }
 

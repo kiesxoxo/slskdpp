@@ -164,6 +164,16 @@ func (h *hub) serve(c net.Conn) {
 	}
 }
 
+// conn returns the open message connection registered for username.
+func (p *Peers) conn(username string) *PeerConn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if pc := p.conns[username]; pc != nil && !pc.Closed() {
+		return pc
+	}
+	return nil
+}
+
 func freePort(t *testing.T) uint32 {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -287,6 +297,74 @@ func TestPeerIndirectConnection(t *testing.T) {
 	defer h.mu.Unlock()
 	if h.forwarded == 0 {
 		t.Error("connection was not made through ConnectToPeer")
+	}
+}
+
+// TestPeerSpoofedName checks that a connection claiming someone else's
+// name, from an address that is not theirs, never receives what we send
+// to them, while a connection from their own address is used.
+func TestPeerSpoofedName(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	h := newHub(t)
+	got := make(chan any, 4)
+	bob := startClient(t, ctx, h, "bob", Handlers{Peer: func(_ string, m any) { got <- m }})
+	alice := startClient(t, ctx, h, "alice", Handlers{})
+	_, port := alice.ListenAddr()
+
+	// Mallory connects as bob from 127.0.0.2; the server has bob at
+	// 127.0.0.1.
+	d := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 2)}}
+	mallory, err := d.DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Skipf("cannot connect from 127.0.0.2: %v", err)
+	}
+	defer mallory.Close()
+	mallory.Write(protocol.EncodeInit(protocol.PeerInit{Username: "bob", Type: protocol.ConnPeer}))
+	for alice.peers.conn("bob") == nil {
+		select {
+		case <-ctx.Done():
+			t.Fatal("alice never took mallory's connection")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if err := alice.SendPeer(ctx, "bob", protocol.QueueUpload{Filename: `a\b.flac`}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-got:
+		if q, ok := m.(protocol.QueueUpload); !ok || q.Filename != `a\b.flac` {
+			t.Errorf("bob got %#v", m)
+		}
+	case <-ctx.Done():
+		t.Fatal("bob never got the message")
+	}
+	mallory.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if n, _ := mallory.Read(make([]byte, 64)); n > 0 {
+		t.Error("mallory received a message meant for bob")
+	}
+
+	// Bob's own connection to alice comes from his address, so alice
+	// answers on it rather than dialling him.
+	alice2 := startClient(t, ctx, h, "alice2", Handlers{})
+	if err := bob.SendPeer(ctx, "alice2", protocol.UserInfoRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	for alice2.peers.conn("bob") == nil {
+		select {
+		case <-ctx.Done():
+			t.Fatal("alice2 never took bob's connection")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	inbound := alice2.peers.conn("bob")
+	pc, err := alice2.peers.Connect(ctx, "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc != inbound {
+		t.Error("alice2 dialled bob instead of using his verified connection")
 	}
 }
 

@@ -87,6 +87,10 @@ type UploadConfig struct {
 	Slots int
 	// MaxQueuedPerUser caps how many files one user may queue.
 	MaxQueuedPerUser int
+	// MaxQueued caps how many files may wait in all. Peers name
+	// themselves, so without it one peer posing as many users could queue
+	// without end.
+	MaxQueued int
 	// SpeedLimit caps total upload speed in bytes per second; 0 is none.
 	SpeedLimit int64
 	// KeepFinished is how many finished uploads stay listed.
@@ -129,6 +133,9 @@ func NewUploads(cfg UploadConfig, net UploadNetwork, files Resolver) *Uploads {
 	}
 	if cfg.MaxQueuedPerUser <= 0 {
 		cfg.MaxQueuedPerUser = 500
+	}
+	if cfg.MaxQueued <= 0 {
+		cfg.MaxQueued = 10000
 	}
 	if cfg.KeepFinished <= 0 {
 		cfg.KeepFinished = 200
@@ -242,9 +249,13 @@ func (u *Uploads) enqueue(username, filename string) string {
 	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	queued := 0
+	queued, total := 0, 0
 	for _, up := range u.list {
-		if up.Username != username || up.State.Done() {
+		if up.State.Done() {
+			continue
+		}
+		total++
+		if up.Username != username {
 			continue
 		}
 		if up.Filename == filename {
@@ -252,7 +263,8 @@ func (u *Uploads) enqueue(username, filename string) string {
 		}
 		queued++
 	}
-	if queued >= u.cfg.MaxQueuedPerUser {
+	// Clients wait and ask again when the reason starts with "Too many".
+	if queued >= u.cfg.MaxQueuedPerUser || total >= u.cfg.MaxQueued {
 		return "Too many files"
 	}
 	u.nextID++
@@ -324,6 +336,9 @@ func (u *Uploads) run(ctx context.Context, up *Upload) {
 		u.log.Info("upload completed", "user", up.Username, "file", up.Filename)
 	case errors.Is(err, errRefused):
 		u.setLocked(up, UploadCancelled, err.Error())
+	case errors.Is(err, errNotShared):
+		u.setLocked(up, UploadFailed, err.Error())
+		go u.send(up.Username, protocol.UploadDenied{Filename: up.Filename, Reason: "File not shared."})
 	default:
 		u.log.Info("upload failed", "user", up.Username, "file", up.Filename, "err", err)
 		u.setLocked(up, UploadFailed, err.Error())
@@ -333,9 +348,21 @@ func (u *Uploads) run(ctx context.Context, up *Upload) {
 	u.wake()
 }
 
-var errRefused = errors.New("the peer declined")
+var (
+	errRefused   = errors.New("the peer declined")
+	errNotShared = errors.New("no longer shared")
+)
 
 func (u *Uploads) transfer(ctx context.Context, up *Upload) error {
+	// The shares may have changed since the file was queued.
+	local, _, ok := u.files.Resolve(up.Filename)
+	if !ok {
+		return errNotShared
+	}
+	u.mu.Lock()
+	up.local = local
+	u.mu.Unlock()
+
 	token := u.net.NewToken()
 	ch := make(chan protocol.TransferResponse, 1)
 	u.mu.Lock()
@@ -347,7 +374,7 @@ func (u *Uploads) transfer(ctx context.Context, up *Upload) error {
 		u.mu.Unlock()
 	}()
 
-	f, err := os.Open(up.local)
+	f, err := os.Open(local)
 	if err != nil {
 		return err
 	}
@@ -468,8 +495,20 @@ func (u *Uploads) setLocked(up *Upload, s UploadState, errText string) {
 	u.cfg.OnUpdate(u.viewLocked(up))
 }
 
-// trimLocked forgets the oldest finished uploads beyond KeepFinished.
+// trimLocked forgets the oldest finished uploads beyond KeepFinished,
+// and when users with nothing left were last served.
 func (u *Uploads) trimLocked() {
+	defer func() {
+		listed := map[string]bool{}
+		for _, up := range u.list {
+			listed[up.Username] = true
+		}
+		for user := range u.lastServed {
+			if !listed[user] {
+				delete(u.lastServed, user)
+			}
+		}
+	}()
 	finished := 0
 	for _, up := range u.list {
 		if up.State.Done() {
@@ -528,12 +567,17 @@ func (u *Uploads) find(id int64) (*Upload, int) {
 
 // Get returns one upload.
 func (u *Uploads) Get(id int64) (UploadView, bool) {
-	for _, v := range u.List() {
-		if v.ID == id {
-			return v, true
-		}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	up, _ := u.find(id)
+	if up == nil {
+		return UploadView{}, false
 	}
-	return UploadView{}, false
+	v := u.viewLocked(up)
+	if up.State == UploadQueued {
+		v.Place = slices.Index(u.queueOrderLocked(), up) + 1
+	}
+	return v, true
 }
 
 // Cancel stops an upload and tells the peer.

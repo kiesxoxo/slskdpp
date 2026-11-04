@@ -516,8 +516,21 @@ func TestSlskdCompatMore(t *testing.T) {
 	if code := fetcher.call("GET", "/api/v0/users/sharer/info", nil, &info); code != 200 || info.UploadSlots == 0 {
 		t.Errorf("info: %d %+v", code, info)
 	}
-	if code := fetcher.call("GET", "/api/v0/users/sharer/browse", nil, nil); code != 200 {
+	var browse struct {
+		DirectoryCount int
+		Directories    []struct {
+			Name  string
+			Files []struct{ Filename string }
+		}
+		LockedDirectoryCount int
+		LockedDirectories    []any
+	}
+	if code := fetcher.call("GET", "/api/v0/users/sharer/browse", nil, &browse); code != 200 {
 		t.Fatalf("browse: %d", code)
+	}
+	if browse.DirectoryCount != 1 || len(browse.Directories) != 1 || len(browse.Directories[0].Files) != 3 ||
+		browse.Directories[0].Files[0].Filename != "01 - Track.flac" || browse.LockedDirectories == nil {
+		t.Errorf("browse %+v", browse)
 	}
 	var progress struct {
 		BytesTransferred, Size int

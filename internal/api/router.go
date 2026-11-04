@@ -3,18 +3,20 @@
 package api
 
 import (
-	"bytes"
+	"bufio"
 	"cmp"
 	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -242,6 +244,13 @@ func securityHeaders(next http.Handler) http.Handler {
 // gzipMin is the smallest JSON body worth compressing.
 const gzipMin = 1024
 
+// gzipPool keeps compressors between responses; each holds hundreds of
+// kilobytes of state, and clients poll.
+var gzipPool = sync.Pool{New: func() any {
+	zw, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+	return zw
+}}
+
 // writeJSON writes v as JSON, gzipped when it is large and the client
 // accepts it. Browse and search results compress very well.
 func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
@@ -250,20 +259,70 @@ func writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 		writeError(w, http.StatusInternalServerError, "encoding response: "+err.Error())
 		return
 	}
+	h := jsonHeaders(w)
+	if len(body) < gzipMin || r == nil || !acceptsGzip(r) {
+		w.WriteHeader(status)
+		w.Write(body)
+		return
+	}
+	h.Set("Content-Encoding", "gzip")
+	w.WriteHeader(status)
+	zw := gzipPool.Get().(*gzip.Writer)
+	zw.Reset(w)
+	zw.Write(body)
+	zw.Close()
+	gzipPool.Put(zw)
+}
+
+func jsonHeaders(w http.ResponseWriter) http.Header {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
 	h.Set("Cache-Control", "no-store")
 	h.Add("Vary", "Accept-Encoding")
-	if len(body) >= gzipMin && r != nil && acceptsGzip(r) {
-		var buf bytes.Buffer
-		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
-		zw.Write(body)
-		zw.Close()
-		body = buf.Bytes()
+	return h
+}
+
+// streamJSON writes a 200 response whose JSON body fill writes piece by
+// piece, gzipped if the client accepts it, so a large body such as a
+// whole share list never exists in memory at once. Once fill starts the
+// status is sent, so a failure shows as a broken body.
+func streamJSON(w http.ResponseWriter, r *http.Request, fill func(w *bufio.Writer)) {
+	h := jsonHeaders(w)
+	var out io.Writer = w
+	if acceptsGzip(r) {
 		h.Set("Content-Encoding", "gzip")
+		zw := gzipPool.Get().(*gzip.Writer)
+		zw.Reset(w)
+		defer func() {
+			zw.Close()
+			gzipPool.Put(zw)
+		}()
+		out = zw
 	}
-	w.WriteHeader(status)
-	w.Write(body)
+	bw := bufio.NewWriterSize(out, 32<<10)
+	fill(bw)
+	bw.Flush() // before the gzip writer closes
+}
+
+// writeArray writes n items as a JSON array, marshalling one at a time.
+func writeArray(w io.Writer, n int, item func(i int) any) error {
+	if _, err := io.WriteString(w, "["); err != nil {
+		return err
+	}
+	for i := range n {
+		if i > 0 {
+			io.WriteString(w, ",")
+		}
+		b, err := json.Marshal(item(i))
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(b); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, "]")
+	return err
 }
 
 func acceptsGzip(r *http.Request) bool {

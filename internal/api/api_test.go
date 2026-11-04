@@ -272,11 +272,19 @@ func TestAuth(t *testing.T) {
 		t.Errorf("tampered cookie: %d", resp.StatusCode)
 	}
 
-	// Cross-site writes are refused even with a valid cookie.
+	// Writes from other origins are refused even with a valid cookie,
+	// including other subdomains of the same site.
+	for _, site := range []string{"cross-site", "same-site"} {
+		req, _ = http.NewRequest("DELETE", e.srv.URL+"/api/v1/searches/1", nil)
+		req.Header.Set("Sec-Fetch-Site", site)
+		if resp, _ := e.http.Do(req); resp.StatusCode != 403 {
+			t.Errorf("%s write: %d", site, resp.StatusCode)
+		}
+	}
 	req, _ = http.NewRequest("DELETE", e.srv.URL+"/api/v1/searches/1", nil)
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	if resp, _ := e.http.Do(req); resp.StatusCode != 403 {
-		t.Errorf("cross-site write: %d", resp.StatusCode)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if resp, _ := e.http.Do(req); resp.StatusCode == 403 {
+		t.Error("same-origin write refused")
 	}
 
 	if resp, _ := e.do(t, "DELETE", "/api/v1/session", nil); resp.StatusCode != 204 {
@@ -307,9 +315,35 @@ func TestSessionExpiry(t *testing.T) {
 	if _, ok := a.verifySession(a.signSession("admin", time.Now().Add(-time.Second))); ok {
 		t.Error("expired token accepted")
 	}
+	a.cfg.Password = "changed"
+	if _, ok := a.verifySession(tok); ok {
+		t.Error("token from before a password change accepted")
+	}
+	a.cfg.Password = ""
 	a.cfg.Username = "renamed"
 	if _, ok := a.verifySession(tok); ok {
 		t.Error("token for old username accepted")
+	}
+}
+
+func TestLoginLimitIPv6(t *testing.T) {
+	l := newLoginLimiter()
+	now := time.Now()
+	// One host picks addresses across its /64 at will.
+	for i := range maxLoginFailures {
+		l.fail(fmt.Sprintf("2001:db8:1:2::%x", i+1), now)
+	}
+	if l.blocked("2001:db8:1:2:ffff::1", now) == 0 {
+		t.Error("another address in the same /64 is not blocked")
+	}
+	if l.blocked("2001:db8:1:3::1", now) != 0 {
+		t.Error("another /64 is blocked")
+	}
+	for range maxLoginFailures {
+		l.fail("192.0.2.1", now)
+	}
+	if l.blocked("192.0.2.2", now) != 0 {
+		t.Error("a neighbouring IPv4 address is blocked")
 	}
 }
 

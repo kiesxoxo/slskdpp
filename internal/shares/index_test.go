@@ -97,6 +97,67 @@ func names(files []protocol.File) []string {
 	return out
 }
 
+// TestPrivateNotShared shares a folder holding slskdpp's own data, as
+// sharing a parent of the downloads folder does: only the downloads may
+// be shared, however the private files are reached.
+func TestPrivateNotShared(t *testing.T) {
+	dir := t.TempDir()
+	data := filepath.Join(dir, "srv", "slskdpp")
+	for _, f := range []string{"session.key", "slskdpp.db", "logs/slskdpp-20260101.log", "incomplete/1-a.flac.part", "downloads/Album/a.flac"} {
+		write(t, filepath.Join(data, filepath.FromSlash(f)), 100)
+	}
+	other := filepath.Join(dir, "other")
+	write(t, filepath.Join(other, "b.flac"), 100)
+	if err := os.Symlink(filepath.Join(data, "session.key"), filepath.Join(other, "key.flac")); err != nil {
+		t.Skip(err)
+	}
+	db, err := store.Open(filepath.Join(dir, "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var private []string
+	for _, p := range []string{"session.key", "slskdpp.db", "logs", "incomplete"} {
+		private = append(private, filepath.Join(data, p))
+	}
+	x, err := Open(Config{
+		Roots:   []Root{ParseRoot("Srv=" + filepath.Join(dir, "srv")), ParseRoot("Other=" + other)},
+		Private: private,
+		Logger:  slog.New(slog.DiscardHandler),
+	}, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go x.Run(ctx)
+	deadline := time.Now().Add(10 * time.Second)
+	for x.Stats().Scanning || x.Stats().LastScan.IsZero() {
+		if time.Now().After(deadline) {
+			t.Fatal("scan never finished")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	dirs, err := x.Contents("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, d := range dirs {
+		for _, f := range d.Files {
+			got = append(got, d.Name+`\`+f.Name)
+		}
+	}
+	sort.Strings(got)
+	want := []string{`Other\b.flac`, `Srv\slskdpp\downloads\Album\a.flac`}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("shared %q, want %q", got, want)
+	}
+	if _, _, ok := x.Resolve(`Srv\slskdpp\session.key`); ok {
+		t.Error("session key resolves")
+	}
+}
+
 func TestSearch(t *testing.T) {
 	e := newEnv(t)
 	for q, want := range map[string][]string{
