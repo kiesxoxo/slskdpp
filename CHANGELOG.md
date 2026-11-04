@@ -41,6 +41,39 @@
 
 - The web UI uses relative URLs, so the same build works under any URL
   base.
+- Changing the web username or password logs out every session and
+  invalidates every slskd API token. Updating logs everyone out once.
+- When `web.password` is not set, the generated password is printed to the
+  console only, not to the log files or `/api/v0/logs`.
+- Log files and new databases are no longer readable by other users.
+- Downloads and uploads use a few database connections instead of one, so
+  long reads such as building our share list no longer hold up the rest.
+  Queuing a folder is saved in one transaction.
+
+### Security
+
+- A connection from another user is no longer used to send them anything
+  until it is known to come from the address the server has for them.
+  Before, anyone could connect claiming to be a user we download from, and
+  then see and answer our requests to them.
+- At most 10,000 files may wait in the upload queue in all, besides the
+  limit per user. Peers name themselves, so one peer could queue without end
+  under made-up names.
+- Queued uploads are checked against the shares again when they start, so
+  removing a share stops what was queued from it.
+- Browse, folder and user info requests are answered a few at a time per
+  user and overall, and a share list sent to many users is no longer copied
+  for each.
+- Small compressed messages from peers are inflated a few at a time, like
+  large ones; each could take up to 16 MB.
+- slskdpp's own files (the database, session key, logs, partial downloads
+  and config file) are never shared, even when a shared folder holds them,
+  as one holding the downloads folder may.
+- Cookie-authenticated writes from other subdomains of the same site are
+  refused, as cross-site ones already were.
+- The failed-login lockout counts IPv6 addresses by their /64.
+- On 32-bit platforms, a peer message with a count of 2³¹ or more crashed
+  the daemon.
 
 ### Fixed
 
@@ -48,6 +81,10 @@
   "Unexpected end of JSON input".
 - A rescan shows as scanning as soon as it is asked for, so the Shares page
   follows it, and slskd's `PUT /api/v0/shares` refuses a second one at once.
+- A finished download moved to another file system no longer blocks the
+  download queue and the API while it is copied.
+- slskd clients polling a search, browsing a large share or finishing many
+  downloads in one folder use far less memory and CPU.
 
 ## [0.2.0] - 2026-10-31
 

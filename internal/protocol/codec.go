@@ -139,6 +139,14 @@ func (r *Reader) IP() netip.Addr {
 // Rest returns all unread bytes.
 func (r *Reader) Rest() []byte { return r.take(r.Remaining()) }
 
+// capFor bounds a preallocation for n items read off the wire by how many
+// items of at least size bytes the rest of the payload can hold. n is
+// never converted to int on its own: on 32-bit platforms a count of 2^31
+// or more would turn negative and make make panic.
+func (r *Reader) capFor(n uint32, size int) int {
+	return int(min(uint64(n), uint64(r.Remaining()/size)))
+}
+
 // ReadFrame reads one length-prefixed frame and returns its body (the bytes
 // after the length). Frames larger than max are rejected.
 func ReadFrame(rd io.Reader, max uint32) ([]byte, error) {
@@ -185,8 +193,10 @@ func ReadBody(rd io.Reader, n uint32) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// eagerFrame is the largest frame ReadFrame allocates up front.
-const eagerFrame = 1 << 20
+// eagerFrame is the largest frame ReadFrame allocates up front. Beyond
+// it memory follows the bytes that actually arrive, so a peer announcing
+// big frames it never sends costs us little.
+const eagerFrame = 64 << 10
 
 // Frame prefixes body with its length.
 func Frame(body []byte) []byte {

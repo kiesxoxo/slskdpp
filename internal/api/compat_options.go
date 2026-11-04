@@ -283,7 +283,12 @@ func v0WriteConfig(path, contents string) error {
 		if st, err := os.Stat(path); err == nil {
 			mode = st.Mode().Perm()
 		}
+		// WriteFile keeps the mode of a .bak that is there already, and
+		// the config holds passwords.
 		if err := os.WriteFile(path+".bak", old, mode); err != nil {
+			return fmt.Errorf("backing up: %w", err)
+		}
+		if err := os.Chmod(path+".bak", mode); err != nil {
 			return fmt.Errorf("backing up: %w", err)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {

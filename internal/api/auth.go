@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -62,8 +63,17 @@ func (a *API) signSession(username string, expires time.Time) string {
 }
 
 func (a *API) mac(payload string) []byte {
-	m := hmac.New(sha256.New, a.cfg.SessionKey)
+	m := hmac.New(sha256.New, a.signingKey("session"))
 	m.Write([]byte(payload))
+	return m.Sum(nil)
+}
+
+// signingKey derives the key for one kind of token from the session key
+// and the web login, so changing the username or password ends every
+// session and token signed before, and kinds cannot pass for each other.
+func (a *API) signingKey(purpose string) []byte {
+	m := hmac.New(sha256.New, a.cfg.SessionKey)
+	m.Write([]byte(purpose + "\x00" + a.cfg.Username + "\x00" + a.cfg.Password))
 	return m.Sum(nil)
 }
 
@@ -120,11 +130,14 @@ func (a *API) auth(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "session expired or invalid")
 			return
 		}
-		// The cookie is SameSite=Strict; refusing cross-site writes outright
-		// also covers browsers that ignore that.
-		if r.Method != http.MethodGet && r.Header.Get("Sec-Fetch-Site") == "cross-site" {
-			writeError(w, http.StatusForbidden, "cross-site request refused")
-			return
+		// The cookie is SameSite=Strict; refusing writes from other origins
+		// outright also covers browsers that ignore that, and sites on
+		// other subdomains, which SameSite counts as the same site.
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" && site != "none" {
+				writeError(w, http.StatusForbidden, "cross-origin request refused")
+				return
+			}
 		}
 		next(w, r)
 	}
@@ -226,8 +239,20 @@ type failures struct {
 
 func newLoginLimiter() *loginLimiter { return &loginLimiter{fails: make(map[string]*failures)} }
 
+// limitKey is what failures from ip count against: the address, or for
+// IPv6 its /64, since one host usually has a whole /64 to pick from.
+func limitKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Unmap().Is4() {
+		return ip
+	}
+	p, _ := addr.Prefix(64)
+	return p.String()
+}
+
 // blocked returns how long ip must wait, or 0.
 func (l *loginLimiter) blocked(ip string, now time.Time) time.Duration {
+	ip = limitKey(ip)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f := l.fails[ip]
@@ -242,6 +267,7 @@ func (l *loginLimiter) blocked(ip string, now time.Time) time.Duration {
 }
 
 func (l *loginLimiter) fail(ip string, now time.Time) {
+	ip = limitKey(ip)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	f := l.fails[ip]
@@ -260,6 +286,7 @@ func (l *loginLimiter) fail(ip string, now time.Time) {
 }
 
 func (l *loginLimiter) reset(ip string) {
+	ip = limitKey(ip)
 	l.mu.Lock()
 	delete(l.fails, ip)
 	l.mu.Unlock()

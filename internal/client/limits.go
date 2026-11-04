@@ -26,6 +26,10 @@ const (
 	gateFrame     = 16 << 10
 	eagerBody     = 1 << 20
 	maxBigDecodes = 3
+	// Smaller compressed messages are read first and then inflated at
+	// most maxInflates at a time: one can still inflate to a search
+	// response's limit, and a popular search brings hundreds at once.
+	maxInflates = 4
 	// bigDecodeWait is how long a connection waits for a turn before it
 	// is dropped, so slow senders holding the turns cannot pile up the
 	// rest.

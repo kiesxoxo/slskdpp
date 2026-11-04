@@ -148,11 +148,14 @@ variable:
 | `SLSKDPP_LOG_LEVEL` | `debug`, `info`, `warn` or `error` |
 
 If `web.password` is empty, slskdpp makes up a password at startup and prints
-it in the log.
+it on the console (standard error, which `docker logs` shows), but not in the
+log files. Changing the web username or password logs everyone out.
 
 Shares can be listed in the config as `"/path"` or `"Name=/path"` (`Name` is
 what other users see), or added and removed on the **Shares** page. Hidden
-files are never shared. Changes on disk are picked up as they happen.
+files are never shared, nor are slskdpp's own database, session key, logs,
+partial downloads and config file, even inside a shared folder. Changes on
+disk are picked up as they happen.
 
 ## The web UI
 
@@ -394,7 +397,11 @@ web:
 Other users' clients are untrusted too. slskdpp limits incoming peer
 connections (1024 in total, 32 per address), drops browse, folder and user info
 responses it did not ask for without reading them, and caps how large any
-message may be, by type. It decodes only a few large messages at a time.
+message may be, by type. It decodes only a few large or compressed messages at
+a time, and answers only a few requests per user at once. Anyone can connect
+claiming any name, so a connection from another user carries nothing we send
+them until it comes from the address the server has for them. The upload queue
+holds at most `max_queued_per_user` files per user and 10,000 in all.
 
 ## Building from source
 

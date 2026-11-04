@@ -236,8 +236,8 @@ func (a *API) v0Completed(dc events.DownloadCompleted) {
 
 	dir := remoteDir(v.Filename)
 	group := []transfers.View{v}
-	for _, o := range a.downloads.List() {
-		if o.ID != v.ID && o.Username == v.Username && remoteDir(o.Filename) == dir {
+	for _, o := range a.downloads.ListUser(v.Username) {
+		if o.ID != v.ID && remoteDir(o.Filename) == dir {
 			group = append(group, o)
 		}
 	}

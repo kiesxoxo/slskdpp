@@ -165,6 +165,41 @@ func TestUploadDenials(t *testing.T) {
 	}
 }
 
+func TestUploadTotalLimit(t *testing.T) {
+	e := newUpEnv(t, 1, 10)
+	e.u.cfg.MaxQueued = 2
+	// Names are whatever peers say, so many users must not get past it.
+	e.u.HandlePeer("alice", protocol.QueueUpload{Filename: fileA})
+	e.u.HandlePeer("bob", protocol.QueueUpload{Filename: fileB})
+	e.u.HandlePeer("carol", protocol.QueueUpload{Filename: fileC})
+	for {
+		s := e.next()
+		if _, ok := s.msg.(protocol.UploadDenied); !ok {
+			continue // a's transfer request
+		}
+		if s.user != "carol" || s.msg != (protocol.UploadDenied{Filename: fileC, Reason: "Too many files"}) {
+			t.Errorf("sent %s %#v", s.user, s.msg)
+		}
+		break
+	}
+	if n := len(e.u.List()); n != 2 {
+		t.Errorf("%d uploads listed", n)
+	}
+}
+
+func TestUploadNoLongerShared(t *testing.T) {
+	e := newUpEnv(t, 1, 10)
+	e.u.HandlePeer("alice", protocol.QueueUpload{Filename: fileA})
+	e.u.HandlePeer("bob", protocol.QueueUpload{Filename: fileB}) // waits for a
+	local, _, _ := e.u.files.Resolve(fileB)
+	os.Remove(local)
+	e.accept("alice", fileA, 0)
+	if s := e.next(); s.user != "bob" || s.msg != (protocol.UploadDenied{Filename: fileB, Reason: "File not shared."}) {
+		t.Errorf("sent %s %#v", s.user, s.msg)
+	}
+	e.waitState(2, UploadFailed)
+}
+
 func TestUploadFairness(t *testing.T) {
 	e := newUpEnv(t, 1, 10)
 	e.u.HandlePeer("alice", protocol.QueueUpload{Filename: fileA})

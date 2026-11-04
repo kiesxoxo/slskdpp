@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kiesxoxo/slskdpp/internal/protocol"
@@ -67,6 +68,7 @@ type Peers struct {
 
 	inbound    *inboundLimiter
 	bigDecodes chan struct{}
+	inflates   chan struct{}
 
 	mu        sync.Mutex
 	listenCtx context.Context      // set by Listen
@@ -100,6 +102,7 @@ func newPeers(username string, listenPort uint32, log *slog.Logger, server serve
 		fileHandler: fileHandler,
 		inbound:     newInboundLimiter(),
 		bigDecodes:  make(chan struct{}, maxBigDecodes),
+		inflates:    make(chan struct{}, maxInflates),
 		conns:       make(map[string]*PeerConn),
 		dials:       make(map[string]*dialCall),
 		addrs:       make(map[string][]chan protocol.PeerAddress),
@@ -235,7 +238,9 @@ func (p *Peers) accept(conn net.Conn) {
 		}
 		ch <- pierceResult{conn: conn}
 	case protocol.PeerInit:
-		p.adopt(m.Username, m.Type, conn)
+		// Anyone can connect under any name, so this is not yet trusted
+		// to carry what we send to m.Username; see Connect.
+		p.adopt(m.Username, m.Type, conn, false)
 	}
 }
 
@@ -256,14 +261,16 @@ func (p *Peers) answerConnectToPeer(m protocol.ConnectToPeerRequest) {
 		p.server.Send(protocol.CantConnectToPeerRequest{Token: m.Token, Username: m.Username})
 		return
 	}
-	p.adopt(m.Username, m.Type, conn)
+	// The server gave the address, as it does for our own dials.
+	p.adopt(m.Username, m.Type, conn, true)
 }
 
-// adopt takes over an established connection of the given type.
-func (p *Peers) adopt(username, typ string, conn net.Conn) {
+// adopt takes over an established connection of the given type. verified
+// says whether conn is known to reach username; see PeerConn.verified.
+func (p *Peers) adopt(username, typ string, conn net.Conn, verified bool) {
 	switch typ {
 	case protocol.ConnPeer:
-		p.serve(p.register(username, conn))
+		p.serve(p.register(username, conn, verified))
 	case protocol.ConnFile:
 		// The uploader opens a file connection with the transfer token.
 		var b [4]byte
@@ -285,11 +292,11 @@ func (p *Peers) adopt(username, typ string, conn net.Conn) {
 	}
 }
 
-// Connect returns a message connection to username, reusing an open one
-// when there is one. Concurrent callers share a single dial.
+// Connect returns a message connection to username, reusing an open,
+// verified one when there is one. Concurrent callers share a single dial.
 func (p *Peers) Connect(ctx context.Context, username string) (*PeerConn, error) {
 	p.mu.Lock()
-	if pc := p.conns[username]; pc != nil && !pc.Closed() {
+	if pc := p.conns[username]; pc != nil && !pc.Closed() && pc.verified.Load() {
 		p.mu.Unlock()
 		return pc, nil
 	}
@@ -308,14 +315,28 @@ func (p *Peers) Connect(ctx context.Context, username string) (*PeerConn, error)
 	}
 }
 
+// runDial gets a verified connection to username for Connect: the one
+// username opened to us, if it comes from the address the server has for
+// them, or else a new one.
 func (p *Peers) runDial(username string, call *dialCall) {
 	// The dial is shared, so it must not depend on one caller's context.
 	ctx, cancel := context.WithTimeout(context.Background(), addressTimeout+directTimeout+indirectTimeout)
 	defer cancel()
-	conn, err := p.dial(ctx, username, protocol.ConnPeer)
+	addr, err := p.lookup(ctx, username)
 	if err == nil {
-		call.pc = p.register(username, conn)
-		go p.serve(call.pc)
+		p.mu.Lock()
+		pc := p.conns[username]
+		p.mu.Unlock()
+		if pc != nil && !pc.Closed() && pc.from(addr.IP) {
+			pc.verified.Store(true)
+			call.pc = pc
+		} else {
+			var conn net.Conn
+			if conn, err = p.dialAddr(ctx, username, addr, protocol.ConnPeer); err == nil {
+				call.pc = p.register(username, conn, true)
+				go p.serve(call.pc)
+			}
+		}
 	}
 	call.err = err
 	p.mu.Lock()
@@ -327,7 +348,7 @@ func (p *Peers) runDial(username string, call *dialCall) {
 // Send delivers m to username, opening a connection if needed. A cached
 // connection that turns out to be dead is replaced once.
 func (p *Peers) Send(ctx context.Context, username string, m protocol.PeerMessage) error {
-	frame := protocol.EncodePeer(m)
+	frame := protocol.EncodePeerParts(m)
 	for attempt := 0; ; attempt++ {
 		pc, err := p.Connect(ctx, username)
 		if err != nil {
@@ -360,13 +381,25 @@ func (p *Peers) ConnectFile(ctx context.Context, username string, token uint32) 
 // dial opens a connection of type typ to username and sends the init
 // message that identifies it.
 func (p *Peers) dial(ctx context.Context, username, typ string) (net.Conn, error) {
-	addr, err := p.peerAddress(ctx, username)
+	addr, err := p.lookup(ctx, username)
 	if err != nil {
 		return nil, err
 	}
-	if addr.Unknown() {
-		return nil, fmt.Errorf("%w: %s", ErrUserOffline, username)
+	return p.dialAddr(ctx, username, addr, typ)
+}
+
+// lookup is peerAddress, failing with ErrUserOffline when the server does
+// not know where username is.
+func (p *Peers) lookup(ctx context.Context, username string) (protocol.PeerAddress, error) {
+	addr, err := p.peerAddress(ctx, username)
+	if err == nil && addr.Unknown() {
+		err = fmt.Errorf("%w: %s", ErrUserOffline, username)
 	}
+	return addr, err
+}
+
+// dialAddr is dial with username's address already looked up.
+func (p *Peers) dialAddr(ctx context.Context, username string, addr protocol.PeerAddress, typ string) (net.Conn, error) {
 	token := p.newToken()
 	conn, derr := p.dialDirect(ctx, addr, typ, token)
 	if derr == nil {
@@ -460,12 +493,18 @@ func (p *Peers) peerAddress(ctx context.Context, username string) (protocol.Peer
 	}
 }
 
-// register makes conn the current message connection for username. An
-// older connection is left to finish what it is doing and idle out.
-func (p *Peers) register(username string, conn net.Conn) *PeerConn {
+// register makes conn the current message connection for username,
+// unless it is unverified and a verified one is open: otherwise anyone
+// could take over what we send to username just by connecting under
+// that name. A connection displaced or passed over is still read from,
+// and left to finish what it is doing and idle out.
+func (p *Peers) register(username string, conn net.Conn, verified bool) *PeerConn {
 	pc := &PeerConn{Username: username, conn: conn, closed: make(chan struct{})}
+	pc.verified.Store(verified)
 	p.mu.Lock()
-	p.conns[username] = pc
+	if old := p.conns[username]; verified || old == nil || old.Closed() || !old.verified.Load() {
+		p.conns[username] = pc
+	}
 	p.mu.Unlock()
 	return pc
 }
@@ -520,15 +559,16 @@ func (p *Peers) readOne(r io.Reader, username string) error {
 			return err
 		}
 	}
-	if n > eagerBody || (n >= gateFrame && protocol.InflateLimit(code) > 0) {
-		t := time.NewTimer(bigDecodeWait)
-		select {
-		case p.bigDecodes <- struct{}{}:
-			t.Stop()
-			defer func() { <-p.bigDecodes }()
-		case <-t.C:
-			return fmt.Errorf("gave up waiting to read a %d byte message", n)
+	// Every compressed message is inflated under one of two gates: big
+	// frames take a turn before they are read, small ones only once they
+	// are in memory, so slow senders cannot hold up the small ones.
+	compressed := protocol.InflateLimit(code) > 0
+	big := n > eagerBody || (n >= gateFrame && compressed)
+	if big {
+		if err := gate(p.bigDecodes, n); err != nil {
+			return err
 		}
+		defer func() { <-p.bigDecodes }()
 	}
 	if code == protocol.CodeSharedFileListResponse && p.browseProgress != nil {
 		size := uint64(n) + 4 // with the length prefix
@@ -539,6 +579,12 @@ func (p *Peers) readOne(r io.Reader, username string) error {
 	payload, err := protocol.ReadBody(r, n-4)
 	if err != nil {
 		return err
+	}
+	if compressed && !big {
+		if err := gate(p.inflates, n); err != nil {
+			return err
+		}
+		defer func() { <-p.inflates }()
 	}
 	m, err := protocol.DecodePeerPayload(code, payload)
 	if err != nil {
@@ -553,10 +599,27 @@ func (p *Peers) readOne(r io.Reader, username string) error {
 	return nil
 }
 
+// gate waits for a turn in sem to decode an n byte message, giving up
+// after bigDecodeWait.
+func gate(sem chan struct{}, n uint32) error {
+	t := time.NewTimer(bigDecodeWait)
+	defer t.Stop()
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-t.C:
+		return fmt.Errorf("gave up waiting to decode a %d byte message", n)
+	}
+}
+
 // PeerConn is a message connection (type ConnPeer) to one user.
 type PeerConn struct {
 	Username string
 	conn     net.Conn
+	// verified is set when the connection is known to reach Username: we
+	// opened it to the address the server gave, or it was opened to us
+	// from that address. Only verified connections carry what we send.
+	verified atomic.Bool
 
 	wmu       sync.Mutex
 	closeOnce sync.Once
@@ -564,16 +627,18 @@ type PeerConn struct {
 }
 
 // Send writes one message to the peer.
-func (c *PeerConn) Send(m protocol.PeerMessage) error { return c.write(protocol.EncodePeer(m)) }
+func (c *PeerConn) Send(m protocol.PeerMessage) error { return c.write(protocol.EncodePeerParts(m)) }
 
-func (c *PeerConn) write(frame []byte) error {
+// write sends one frame, given in consecutive parts.
+func (c *PeerConn) write(frame [][]byte) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	if c.Closed() {
 		return net.ErrClosed
 	}
 	c.conn.SetWriteDeadline(time.Now().Add(peerWriteTimeout))
-	if _, err := c.conn.Write(frame); err != nil {
+	bufs := net.Buffers(slices.Clone(frame)) // WriteTo consumes it; Send may retry
+	if _, err := bufs.WriteTo(c.conn); err != nil {
 		c.Close()
 		return err
 	}
@@ -587,6 +652,12 @@ func (c *PeerConn) Close() {
 		close(c.closed)
 		c.conn.Close()
 	})
+}
+
+// from reports whether the connection comes from ip.
+func (c *PeerConn) from(ip netip.Addr) bool {
+	remote, err := netip.ParseAddrPort(c.conn.RemoteAddr().String())
+	return err == nil && remote.Addr().Unmap() == ip.Unmap()
 }
 
 func (c *PeerConn) Closed() bool {

@@ -51,6 +51,10 @@ type Config struct {
 	// RescanInterval re-reads every share now and then, in case changes
 	// were missed; 0 means every 6 hours.
 	RescanInterval time.Duration
+	// Private are local files and folders that are never shared, even
+	// inside a shared folder: our database, session key, logs and the
+	// like.
+	Private []string
 	// OnChange is called after the shared files change.
 	OnChange func()
 	Logger   *slog.Logger
@@ -62,7 +66,8 @@ type Index struct {
 	log *slog.Logger
 	db  *sql.DB
 
-	scanMu sync.Mutex // one scan at a time
+	scanMu  sync.Mutex // one scan at a time
+	private []string   // Config.Private, as realPath gives them
 
 	mu       sync.Mutex
 	roots    map[string]Root
@@ -107,6 +112,9 @@ func Open(cfg Config, db *sql.DB) (*Index, error) {
 		roots: make(map[string]Root),
 		dirty: make(map[string]bool),
 		kick:  make(chan struct{}, 1),
+	}
+	for _, p := range cfg.Private {
+		x.private = append(x.private, realPath(p))
 	}
 	for _, r := range cfg.Roots {
 		if _, err := x.addRootLocked(r); err != nil {
@@ -178,6 +186,33 @@ func (x *Index) addRootLocked(r Root) (Root, error) {
 func within(dir, p string) bool {
 	rel, err := filepath.Rel(dir, p)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// realPath is p made absolute with symlinks resolved, as far as it
+// exists: a file that is not there yet is placed in its real folder.
+func realPath(p string) string {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return p
+}
+
+// isPrivate reports whether resolved, a path as realPath gives it, is or
+// is inside one of the private paths.
+func (x *Index) isPrivate(resolved string) bool {
+	for _, p := range x.private {
+		if resolved == p || within(p, resolved) {
+			return true
+		}
+	}
+	return false
 }
 
 // Roots lists the shared folders.
@@ -468,8 +503,11 @@ func (x *Index) scan(ctx context.Context, r Root, dir string) (bool, error) {
 	}
 	seen := map[string]bool{}
 	changed := false
-	var walk func(local string) error
-	walk = func(local string) error {
+	// resolved is where local really is, for checking private paths
+	// without resolving every file: the walk does not follow symlinked
+	// folders, so below dir only symlinked files can lead elsewhere.
+	var walk func(local, resolved string) error
+	walk = func(local, resolved string) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -487,9 +525,17 @@ func (x *Index) scan(ctx context.Context, r Root, dir string) (bool, error) {
 			if strings.HasPrefix(name, ".") || strings.ContainsRune(name, '\\') {
 				continue
 			}
-			full := filepath.Join(local, name)
+			full, fullResolved := filepath.Join(local, name), filepath.Join(resolved, name)
+			if e.Type()&os.ModeSymlink != 0 {
+				if fullResolved, err = filepath.EvalSymlinks(full); err != nil {
+					continue
+				}
+			}
+			if x.isPrivate(fullResolved) {
+				continue
+			}
 			if e.IsDir() {
-				if err := walk(full); err != nil {
+				if err := walk(full, fullResolved); err != nil {
 					return err
 				}
 				continue
@@ -504,7 +550,7 @@ func (x *Index) scan(ctx context.Context, r Root, dir string) (bool, error) {
 		changed = changed || c
 		return err
 	}
-	if err := walk(dir); err != nil {
+	if err := walk(dir, realPath(dir)); err != nil {
 		return changed, err
 	}
 	// Folders that were indexed below dir but are gone now.
@@ -894,7 +940,7 @@ func (x *Index) Resolve(virtual string) (local string, size uint64, ok bool) {
 	}
 	rel := strings.TrimPrefix(strings.TrimPrefix(virtual, r.Alias), `\`)
 	local = filepath.Join(r.Path, filepath.FromSlash(strings.ReplaceAll(rel, `\`, "/")))
-	if !within(r.Path, local) {
+	if !within(r.Path, local) || x.isPrivate(realPath(local)) {
 		return "", 0, false
 	}
 	st, err := os.Stat(local)
