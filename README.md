@@ -56,7 +56,7 @@ creates the account on first login).
 
 ### Docker
 
-Images for amd64, arm64 and armv7 are published on GitHub's registry as
+Images for amd64 and arm64 are published on GitHub's registry as
 `ghcr.io/kiesxoxo/slskdpp`, tagged `latest`, by version (`0.1.0`) and by minor
 version (`0.1`).
 
