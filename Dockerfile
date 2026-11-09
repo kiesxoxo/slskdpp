@@ -5,7 +5,7 @@
 ARG RUNTIME=gcr.io/distroless/static-debian12:nonroot
 
 # Where the binary comes from: "source" builds the UI and binary here;
-# "prebuilt" packages binaries already in prebuilt/<os>/<arch>[/<variant>]/,
+# "prebuilt" packages binaries already in prebuilt/<os>/<arch>/,
 # as the release workflow does so images hold the released binaries.
 ARG BINARY=source
 
@@ -19,7 +19,7 @@ COPY web/ ./
 RUN npm run build
 
 FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS build
-ARG TARGETOS TARGETARCH TARGETVARIANT
+ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 ENV GOTOOLCHAIN=auto
 WORKDIR /src
@@ -27,7 +27,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w -X github.com/kiesxoxo/slskdpp/internal/version.Version=$VERSION" \
     -o /out/slskdpp ./cmd/slskdpp
 

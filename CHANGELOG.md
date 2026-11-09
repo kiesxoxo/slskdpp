@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Packaging
+
+- Releases are 64-bit only: there are no more armv7 binaries or images.
+  Raspberry Pis running a 64-bit OS use the arm64 ones.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added
